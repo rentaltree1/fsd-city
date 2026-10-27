@@ -343,6 +343,9 @@ export class Traffic {
         const lon = rx * fx + rz * fz, lat = -rx * fz + rz * fx, dh = Math.abs(wrap(o0[2] - c.h));
         if (dh < 0.7 && lon < 0 && Math.abs(lat) < 1.8) return; // following us in our lane
         if (dh < 0.6 && lon > 0 && Math.abs(lat) < 2.4) return;  // our leader: IDM keeps the distance
+        // the player beside or behind us in the next lane, planning to move over: they merge in behind
+        // us (only a car already ahead of our nose is let in)
+        if (isPlayer && dh < 0.7 && lon < c.L / 2 + 1.5 && Math.abs(lat) > 1.8 && Math.abs(lat) < 5.6) return;
         for (let i = 1; i <= HZ; i++) {
           const m = mine[i], o = oT[i];
           if (!Traffic.overlap(m[0], m[1], m[2], c.L, c.W, o[0], o[1], o[2], oL, oW)) continue;
