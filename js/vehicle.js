@@ -67,7 +67,7 @@ export class Vehicle {
     // energy: game-accelerated consumption so charging matters
     if (Math.abs(this.v) > 0.1) this.battery = Math.max(0, this.battery - Math.abs(this.v) * dt * (1 + Math.max(0, this.accel) * 0.12) / 25000);
     this.collide(others);
-    const gh = this.city.groundHeight(this.cx, this.cz);
+    const gh = this.city.groundHeight(this.cx, this.cz, this.y);
     this.y = lerp(this.y, gh, Math.min(1, dt * 10));
   }
 
@@ -98,7 +98,7 @@ export class Vehicle {
       const r = obbVsObb(ob.cx, ob.cz, this.h, HALF_L, HALF_W, o.x, o.z, o.h, o.L / 2, o.W / 2);
       if (r) push(r[0], r[1], r[2]);
     }
-    const lim = 3300;
+    const lim = 5900;
     this.x = clamp(this.x, -lim, lim); this.z = clamp(this.z, -lim, lim);
     if (hit > 1.2 && this.onCollide) this.onCollide(hit);
   }

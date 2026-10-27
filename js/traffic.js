@@ -41,15 +41,15 @@ export class Traffic {
   }
 
   laneSeg(c) {
-    const e = c.edge;
+    const e = c.edge, city = this.city;
     c.lane = Math.min(c.lane, e.lanes - 1);
-    const off = e.laneOff[c.lane];
+    const off = (u) => city.laneW(e, c.lane, u);
     if (e.curve) {
       c.pts = [];
       const span = e.len - e.sa - e.sb, n = Math.max(2, Math.ceil(span / 4));
-      for (let i = 0; i <= n; i++) { const p = this.city.edgePoint(e, e.sa + (span * i) / n, off); c.pts.push([p.x, p.z]); }
+      for (let i = 0; i <= n; i++) { const u = e.sa + (span * i) / n, p = city.edgePoint(e, u, off(u)); c.pts.push([p.x, p.z]); }
     } else {
-      const a = this.city.edgePoint(e, e.sa, off), b = this.city.edgePoint(e, e.len - e.sb, off);
+      const a = city.edgePoint(e, e.sa, off(e.sa)), b = city.edgePoint(e, e.len - e.sb, off(e.len - e.sb));
       c.pts = [[a.x, a.z], [b.x, b.z]];
     }
     this.measure(c);
@@ -58,22 +58,22 @@ export class Traffic {
     const e = c.edge, n = c.next, l = c.lane, city = this.city;
     // through a bend in the road a car keeps its lane; at a junction it turns into the nearest lane
     const bend = city.nodes[e.b].bend || city.nodes[e.b].pass;
-    const nl = bend ? Math.min(l, n.lanes - 1) : c.move === 'R' || c.move === 'r' ? n.lanes - 1 : isLeft(c.move) || c.move === 'U' ? 0 : Math.min(l, n.lanes - 1);
+    const nl = city.laneAfter(e, l, n, bend ? 'S' : c.move);
     c.nextLane = nl;
     c.turnExt = c.move === 'R' ? 7 : c.move === 'L' ? 3 : c.move === 'S' || c.move === 'U' ? 0 : 2;
     c.waitS = null;
-    if (c.move === 'U') { c.pts = uturnPoints(city, e, e.laneOff[l], n.laneOff[nl]); this.measure(c); return; }
-    const P = city.edgePoint(e, e.len - e.sb, e.laneOff[l]), Q = city.edgePoint(n, n.sa + c.turnExt, n.laneOff[nl]);
+    if (c.move === 'U') { c.pts = uturnPoints(city, e, city.laneW(e, l, e.len), city.laneW(n, nl, 0)); this.measure(c); return; }
+    const P = city.edgePoint(e, e.len - e.sb, city.laneW(e, l, e.len - e.sb)), Q = city.edgePoint(n, n.sa + c.turnExt, city.laneW(n, nl, n.sa + c.turnExt));
     // streets meet at all sorts of angles: even "straight through" bends gently across the junction
     if (c.move === 'S' && e.dx * n.sdx + e.dz * n.sdz > 0.998) { c.pts = [[P.x, P.z], [Q.x, Q.z]]; }
     else if (bend) {
       // a bend in the road: a smooth curve through the corner where the two lane lines meet
-      const C = city.edgePoint(e, e.len, e.laneOff[l]), C2 = city.edgePoint(n, 0, n.laneOff[nl]), cx = (C.x + C2.x) / 2, cz = (C.z + C2.z) / 2;
+      const C = city.edgePoint(e, e.len, city.laneW(e, l, e.len)), C2 = city.edgePoint(n, 0, city.laneW(n, nl, 0)), cx = (C.x + C2.x) / 2, cz = (C.z + C2.z) / 2;
       const k = Math.max(2, Math.ceil(Math.hypot(Q.x - P.x, Q.z - P.z) / 1.5));
       c.pts = [];
       for (let i = 0; i <= k; i++) { const t = i / k, a = (1 - t) * (1 - t), b = 2 * t * (1 - t), d = t * t; c.pts.push([a * P.x + b * cx + d * Q.x, a * P.z + b * cz + d * Q.z]); }
     } else {
-      c.pts = turnPoints(P, e.dx, e.dz, Q, n.sdx, n.sdz, e.laneOff[l], 12, Math.min(e.hw, n.hw), Math.min(e.kerb, n.kerb), c.move === 'L');
+      c.pts = turnPoints(P, e.dx, e.dz, Q, n.sdx, n.sdz, city.laneW(e, l, e.len - e.sb), 12, Math.min(e.hw, n.hw), Math.min(e.kerb, n.kerb), c.move === 'L');
       if (c.move === 'L' && c.pts.lead > 2) c.waitS = c.pts.lead * 0.9 - 1.2;
     }
     this.measure(c);
@@ -110,13 +110,13 @@ export class Traffic {
     const city = this.city;
     for (let tries = 0; tries < 40; tries++) {
       const e = city.edges[Math.floor(this.rand() * city.edges.length)];
-      if (e.len - e.sa - e.sb < 12) continue;
+      if (e.noEntry || e.len - e.sa - e.sb < 12) continue;
       const mp = city.edgePoint(e, e.len / 2, 0), mx = mp.x, mz = mp.z;
       const d = Math.hypot(mx - px, mz - pz);
       if (d < minD || d > maxD) continue;
       // arterials carry most of the traffic
-      if (e.lanes === 1 && this.rand() < 0.45) continue;
-      c.edge = e; c.lane = this.rand() < 0.5 ? 0 : 1; c.mode = 'lane';
+      if (e.lanes === 1 && e.kind !== 'ramp' && this.rand() < 0.45) continue;
+      c.edge = e; c.lane = Math.floor(this.rand() * e.lanes); c.mode = 'lane';
       this.laneSeg(c);
       c.s = 3 + this.rand() * (c.len - 6);
       const [x, z, h] = this.posAt(c, c.s);
@@ -221,6 +221,8 @@ export class Traffic {
   canProceed(c, player, pLoc) {
     const n = this.city.nodes[c.edge.b], ctl = c.edge.ctl;
     const dist = c.len - c.s - c.L / 2;
+    // an on-ramp: roll on when nothing is coming down the freeway's right lane
+    if (ctl === 'yield') return !this.priorityComing(n, c, player, pLoc) && !this.boxOccupied(n, c, player, pLoc);
     if (n.pass || n.bend) return true;
     // round the end of a cul-de-sac one at a time (cars from both lanes would meet half way round)
     if (n.bulb) return !this.cars.some((o) => o !== c && o.active && o.mode === 'turn' && o.edge.b === n.id && o.s < o.len * 0.6);
@@ -293,6 +295,7 @@ export class Traffic {
       const fx = Math.cos(c.h), fz = Math.sin(c.h);
       let gap = 1e9, vl = 0;
       const consider = (o, L, W) => {
+        if (Math.abs((o.y || 0) - (c.y || 0)) > 3) return; // on the overpass / under it
         const rx = o.x - c.x, rz = o.z - c.z;
         const lon = rx * fx + rz * fz;
         if (lon <= 0 || lon > 60) return;
@@ -338,6 +341,7 @@ export class Traffic {
       // gets there second yields (a car already in the junction goes first; the player always has it)
       const mine = plans.get(c), reach = c.v * 4 + 14;
       const conflict = (oT, oL, oW, ob, oBox, isPlayer) => {
+        if (Math.abs(((isPlayer ? player : ob).y || 0) - (c.y || 0)) > 3) return;
         const o0 = oT[0], rx = o0[0] - c.x, rz = o0[1] - c.z;
         if (Math.abs(rx) > reach + 40 || Math.abs(rz) > reach + 40) return;
         const lon = rx * fx + rz * fz, lat = -rx * fz + rz * fx, dh = Math.abs(wrap(o0[2] - c.h));
@@ -373,7 +377,7 @@ export class Traffic {
       // last line of defence: never drive into the player's car (whatever the predictions said)
       {
         const rx = player.x - c.x, rz = player.z - c.z;
-        if (rx * rx + rz * rz < 100) {
+        if (rx * rx + rz * rz < 100 && Math.abs((player.y || 0) - (c.y || 0)) < 3) {
           const ahead = c.v * 0.6 + 1.2, nx = c.x + fx * ahead * 0.5, nz = c.z + fz * ahead * 0.5;
           if (Traffic.overlap(nx, nz, c.h, c.L + ahead, c.W, player.x, player.z, player.h, P_L, P_W)) {
             const g = Math.max(0, rx * fx + rz * fz - c.L / 2 - P_L / 2 - 0.3); if (g < gap) { gap = g; vl = 0; }
@@ -432,9 +436,9 @@ export class Traffic {
       }
       const x = c.x, z = c.z;
       let y = 0, pitch = 0;
-      if (!city.inCity(x, z)) {
+      if (!city.inCity(x, z) || c.edge.level || (c.next && c.next.level)) {
         const fx = Math.cos(c.h) * c.L * 0.4, fz = Math.sin(c.h) * c.L * 0.4;
-        const hf = city.groundHeight(x + fx, z + fz), hr = city.groundHeight(x - fx, z - fz);
+        const hf = city.groundHeight(x + fx, z + fz, c.y || 0), hr = city.groundHeight(x - fx, z - fz, c.y || 0);
         y = (hf + hr) / 2; pitch = Math.atan2(hf - hr, c.L * 0.8);
       }
       c.y = y;

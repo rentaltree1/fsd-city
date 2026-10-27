@@ -4,7 +4,8 @@
 import * as THREE from 'three';
 import { clamp, lerp, smooth, rng } from './config.js';
 
-export const CITY_EDGE = 975;
+export const CITY_EDGE = 2330;
+export const FINE_RANGE = 4300;          // the detailed terrain mesh reaches this far from the centre
 
 function hash2(x, y) {
   let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) | 0;
@@ -45,7 +46,7 @@ export function rawHeight(x, z, d) {
 
 export class Terrain {
   constructor() {
-    this.size = 7200; this.cell = 10; this.N = this.size / this.cell;
+    this.size = 12000; this.cell = 15; this.N = this.size / this.cell;
     this.h = null; this.roads = [];
   }
   addRoad(pts) { this.roads.push({ pts, y: null }); }
@@ -140,7 +141,8 @@ export class Terrain {
       for (let k = 0; k < n; k++) ys[k] = Math.max(0, this.rawAt(r.pts[k].x, r.pts[k].z));
       const sm = new Float32Array(n), W = 28;
       for (let k = 0; k < n; k++) { let s = 0, m = 0; for (let q = Math.max(0, k - W); q <= Math.min(n - 1, k + W); q++) { s += ys[q]; m++; } sm[k] = s / m; }
-      for (let k = 0; k < 12; k++) { sm[k] = 0; sm[n - 1 - k] = 0; }
+      // an end down in the flat land is pinned to ground level; one up in the hills (a lookout) stays put
+      for (const end of [0, 1]) { const p = r.pts[end ? n - 1 : 0]; if (this.cityDist(p.x, p.z) <= 0) for (let k = 0; k < 12; k++) sm[end ? n - 1 - k : k] = 0; }
       // grade limit (10%) that only ever lowers the road: where the land is too steep the road cuts down
       // into it (the hillside is carved back below) instead of lifting the pinned ends off the ground
       for (let k = 1; k < n; k++) sm[k] = Math.min(sm[k], sm[k - 1] + Math.hypot(r.pts[k].x - r.pts[k - 1].x, r.pts[k].z - r.pts[k - 1].z) * 0.1);
@@ -211,7 +213,7 @@ export class Terrain {
       const x = -range + i * step, z = -range + j * step, k = (j * (n + 1) + i) * 3;
       let y = this.heightAt(x, z);
       if (step === this.cell) { const gi = Math.round((x + this.size / 2) / this.cell), gj = Math.round((z + this.size / 2) / this.cell); y -= this.sink[this.idx(gi, gj)]; }
-      if (drop && Math.abs(x) < 2780 && Math.abs(z) < 2780) y -= drop;
+      if (drop && Math.abs(x) < FINE_RANGE - 20 && Math.abs(z) < FINE_RANGE - 20) y -= drop;
       pos[k] = x; pos[k + 1] = y; pos[k + 2] = z;
       const s = this.slopeAt(x, z), v = vnoise(x / 37, z / 37) * 0.5 + vnoise(x / 9, z / 9) * 0.5;
       const inCity = this.cityDist(x, z) < 0;
@@ -255,7 +257,7 @@ export class Terrain {
     // (the coarse far-field mesh sits well below the fine one wherever both exist: its 40 m cells would
     // otherwise bridge over road cuttings)
     // each is cut into tiles so the parts behind the camera (or outside the shadow's reach) are skipped
-    this.meshes = [...this.tiles(this.mesh(2800, 10), 8, mat), ...this.tiles(this.mesh(this.size / 2, 40, 300), 4, mat)];
+    this.meshes = [...this.tiles(this.mesh(FINE_RANGE, 15), 10, mat), ...this.tiles(this.mesh(this.size / 2, 60, 300), 4, mat)];
     for (const m of this.meshes) { m.receiveShadow = true; scene.add(m); }
   }
   // split a square grid mesh into k x k meshes that share its vertex buffers, each with its own bounds
@@ -283,7 +285,7 @@ export class Terrain {
   scatterTrees(count, seed = 5) {
     const R = rng(seed), out = [];
     for (let k = 0; k < count * 12 && out.length < count; k++) {
-      const x = (R() * 2 - 1) * 2100, z = (R() * 2 - 1) * 2100;
+      const x = (R() * 2 - 1) * 4100, z = (R() * 2 - 1) * 4100;
       if (this.cityDist(x, z) < 15) continue;
       const dens = vnoise(x / 260, z / 260);
       if (dens < 0.47 && R() > 0.04) continue; // trees grow in the dark forest patches, a few strays elsewhere

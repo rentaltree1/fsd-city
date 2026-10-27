@@ -755,7 +755,7 @@ async function boot() {
       if (car.battery >= car.chargeLimit) { act.stopCharge(); toast('Charging complete', `${Math.round(car.battery * 100)}% · ${Math.round(car.rangeMi)} mi`, '#20b85a'); audio.chime('charge'); }
     }
     // traffic
-    traffic.update(dt, { x: car.cx, z: car.cz, v: Math.abs(car.v), h: car.v < 0 ? car.h + Math.PI : car.h, L: CAR_LEN, W: CAR_WID, route: fsd.engaged && car.v > 0.3 ? fsd.ahead(45) : null });
+    traffic.update(dt, { x: car.cx, z: car.cz, y: car.y, v: Math.abs(car.v), h: car.v < 0 ? car.h + Math.PI : car.h, L: CAR_LEN, W: CAR_WID, route: fsd.engaged && car.v > 0.3 ? fsd.ahead(45) : null });
     // turn signals
     blinkT -= dt;
     if (blinkT <= 0) {
@@ -781,11 +781,12 @@ async function boot() {
     const awake = inCar || dCar < 6 || car.charging || !!fsd.summon || flashT > 0;
     model.root.position.set(car.cx, car.y, car.cz);
     model.root.rotation.order = 'YXZ';
-    if (Math.abs(car.cx) > 950 || Math.abs(car.cz) > 950) {
+    {
+      // pitch with the ground (hills, the freeway's overpasses)
       const fx = Math.cos(car.h) * WHEELBASE / 2, fz = Math.sin(car.h) * WHEELBASE / 2;
-      const hf = city.groundHeight(car.cx + fx, car.cz + fz), hr = city.groundHeight(car.cx - fx, car.cz - fz);
+      const hf = city.groundHeight(car.cx + fx, car.cz + fz, car.y), hr = city.groundHeight(car.cx - fx, car.cz - fz, car.y);
       model.root.rotation.x = lerp(model.root.rotation.x, Math.atan2(hf - hr, WHEELBASE), Math.min(1, dt * 8));
-    } else model.root.rotation.x = lerp(model.root.rotation.x, 0, Math.min(1, dt * 8));
+    }
     model.root.rotation.y = yawFromHeading(car.h);
     const headlights = settings.headlights === 'On' || (settings.headlights === 'Auto' && night > 0.35 && awake);
     model.update(dt, { v: car.v, steer: car.steer, accel: car.accel, latAcc: car.latAcc, dist: car.dist, signal: car.signal, hazard: car.hazard, blinkOn: state.blinkOn, headlights, braking: car.braking && awake, gear: car.gear, awake, night, time: clock.simT, charging: car.charging });

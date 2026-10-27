@@ -172,9 +172,10 @@ export class Vision {
         const sig = 0.02 + o.d * 0.0012;
         const mx = o.x + gauss() * sig, mz = o.z + gauss() * sig;
         if (!tr) {
-          tr = { id: o.id, x: mx, z: mz, h: o.h, v: o.v, L: o.L, W: o.W, H: o.H, type: o.type, parked: !!o.parked, conf: 0.35, lastSeen: this.t, stopSince: null, cams: [] };
+          tr = { id: o.id, x: mx, z: mz, y: o.y || 0, h: o.h, v: o.v, L: o.L, W: o.W, H: o.H, type: o.type, parked: !!o.parked, conf: 0.35, lastSeen: this.t, stopSince: null, cams: [] };
           this.tracks.set(o.id, tr);
         } else {
+          tr.y = o.y || 0;
           // alpha filter on top of a constant-velocity prediction: steady, no jitter, little lag
           const px = tr.x + Math.cos(tr.h) * tr.v * dt, pz = tr.z + Math.sin(tr.h) * tr.v * dt;
           tr.x = px + (mx - px) * 0.35; tr.z = pz + (mz - pz) * 0.35;
@@ -555,7 +556,7 @@ export class FSD {
       const c = this.city.edgeLocal(e, tr.x, tr.z);
       if (c.u < u0 || c.u > e.len || c.w < 0 || c.w > e.hw) continue;
       if (Math.cos(tr.h - e.h) < 0.7) continue;
-      const l = this.laneOfW(e, c.w);
+      const l = this.laneOfW(e, c.w, c.u);
       q[l] = Math.max(q[l], e.len - e.sb - c.u + tr.L) + (tr.v < 2.5 ? 6 : 2);
     }
     return q;
@@ -566,20 +567,20 @@ export class FSD {
     for (const l of allowed) { const c = q[l] + (l !== cur ? this.prof.laneBias : 0); if (c < bc) { bc = c; best = l; } }
     return best;
   }
-  // which lane of e a car at lateral offset w is in
-  laneOfW(e, w) {
+  // which lane of e a car at lateral offset w (at u along it) is in
+  laneOfW(e, w, u = 0) {
     let best = 0;
-    for (let l = 1; l < e.lanes; l++) if (Math.abs(e.laneOff[l] - w) < Math.abs(e.laneOff[best] - w)) best = l;
+    for (let l = 1; l < e.lanes; l++) if (Math.abs(this.city.laneW(e, l, u) - w) < Math.abs(this.city.laneW(e, best, u) - w)) best = l;
     return best;
   }
   // The vehicle in lane l of edge e that is beside us, close behind (closer still when it is catching
   // up) or just ahead of u: moving over now would cut it off. null when the lane is free. v: our speed.
   laneBlocker(e, l, u, v = 0) {
     for (const tr of this.vision.tracks.values()) {
-      if (tr.conf < 0.2 || tr.parked) continue;
+      if (tr.conf < 0.2 || tr.parked || Math.abs((tr.y || 0) - this.carY) > 3) continue;
       const c = this.city.edgeLocal(e, tr.x, tr.z);
       if (c.w < 0 || c.w > e.hw || Math.cos(tr.h - e.h) < 0.5) continue;
-      if (this.laneOfW(e, c.w) !== l) continue;
+      if (this.laneOfW(e, c.w, c.u) !== l) continue;
       const back = 7 + v * 0.4 + Math.max(0, tr.v - v) * 3 + tr.L / 2, fwd = 6 + Math.max(0, v - tr.v) * 1.2 + tr.L / 2;
       if (c.u > u - back && c.u < u + fwd) return tr;
     }
@@ -650,7 +651,7 @@ export class FSD {
       if (!route) return 'No route found';
     } else route = this.randomRoute(startEdge, 14);
     const prof = this.prof;
-    let lane = this.laneOfW(startEdge, startW), nextStart = 0, carry = null;
+    let lane = this.laneOfW(startEdge, startW, startU), nextStart = 0, carry = null;
     for (let k = 0; k < route.length; k++) {
       const e = route[k], last = k === route.length - 1, next = route[k + 1];
       const move = next ? city.moveOf(e, next) : null;
@@ -686,8 +687,9 @@ export class FSD {
       // so a change that doesn't fit before a bend carries on along the next piece; it is shortened only
       // when a real junction is near.
       const vlc = Math.max(Math.abs(car.v), vlim * 0.75), span = uEnd - uStart;
-      const wFrom = k === 0 ? startW : carry ? carry.wNow : e.laneOff[lane];
-      const wTo = last && dest && dest.roadside ? (dest.pullW ?? e.hw - 1.4) : carry ? carry.b : e.laneOff[target];
+      const wFrom = k === 0 ? startW : carry ? carry.wNow : city.laneW(e, lane, uStart);
+      const wTo = last && dest && dest.roadside ? (dest.pullW ?? e.hw - 1.4) : carry ? carry.b : city.laneW(e, target, uEnd);
+      const varying = e.laneOff1 && e.laneOff1 !== e.laneOff; // a ramp: the lane itself shifts along the street
       let lcA = wFrom, lcB = wTo, lcLen = 0, lc0 = uStart;
       if (carry) { lcA = carry.a; lcLen = carry.len; lc0 = uStart - carry.done; }
       else {
@@ -703,7 +705,7 @@ export class FSD {
         if (bendB) lc0 = Math.min(lc0, Math.max(uStart, uEnd - 2));
         else if (lc0 + lcLen > uEnd - 5) { lc0 = Math.max(uStart, uEnd - 5 - lcLen); lcLen = Math.max(3, Math.min(lcLen, uEnd - 5 - lc0)); }
       }
-      const wAtU = (uu) => (lcLen ? lerp(lcA, lcB, smooth((uu - lc0) / lcLen)) : wTo);
+      const wAtU = varying ? (uu) => city.laneW(e, 0, uu) + (wFrom - city.laneW(e, 0, uStart)) * (1 - smooth((uu - uStart) / 12)) : (uu) => (lcLen ? lerp(lcA, lcB, smooth((uu - lc0) / lcLen)) : wTo);
       const s0 = path.lastS;
       for (let u = uStart; u < uEnd + 0.5; u += 1) {
         const uu = Math.min(u, uEnd);
@@ -723,8 +725,9 @@ export class FSD {
       if (!last) {
         const node = city.nodes[e.b], sLine = path.lastS;
         let jev = null;
-        if (!node.pass && !node.bend && !node.bulb) {
-          const base = { s: sLine, off: FRONT_OFF + 0.6, off0: FRONT_OFF + 0.6, node, edge: e, move, toName: next.name, done: false, phase: 'approach' };
+        const base = { s: sLine, off: FRONT_OFF + 0.6, off0: FRONT_OFF + 0.6, node, edge: e, move, toName: next.name, done: false, phase: 'approach' };
+        if (node.fwy && e.kind === 'ramp') events.push(jev = { ...base, type: 'merge', fwyIn: Object.values(node.in).find((o) => o.kind === 'fwy' && !o.noEntry), fwyOut: next });
+        else if (!node.pass && !node.bend && !node.bulb) {
           if (e.ctl === 'light') events.push(jev = { ...base, type: 'light' });
           else if (e.ctl === 'stop4') events.push(jev = { ...base, type: 'stop' });
           else if (e.ctl === 'stop2') events.push(jev = { ...base, type: 'stop2' });
@@ -734,8 +737,8 @@ export class FSD {
         // turns finish a few metres down the new street so the arc has a realistic radius
         const ext = move === 'R' ? 7 : move === 'L' ? 3 : move === 'S' || move === 'U' ? 0 : 2;
         nextStart = bendB ? trim : next.sa + ext;
-        const nl = move === 'R' || move === 'r' ? next.lanes - 1 : move === 'L' || move === 'l' || move === 'U' ? 0 : Math.min(lane, next.lanes - 1);
-        const wP = bendB ? wEnd : e.laneOff[lane], wQ = bendB && carry ? carry.wNow : next.laneOff[nl];
+        const nl = city.laneAfter(e, lane, next, bendB ? 'S' : move);
+        const wP = bendB ? wEnd : city.laneW(e, lane, uEnd), wQ = bendB && carry ? carry.wNow : city.laneW(next, nl, nextStart);
         const P = city.edgePoint(e, uEnd, wP), Q = city.edgePoint(next, nextStart, wQ);
         if (bendB) {
           // quadratic curve through the corner where the two lane lines meet
@@ -743,13 +746,13 @@ export class FSD {
           const cx = (C.x + C2.x) / 2, cz = (C.z + C2.z) / 2, n = Math.max(2, Math.ceil((2 * trim) / 1));
           for (let i = 1; i <= n; i++) { const t = i / n, a = (1 - t) * (1 - t), b = 2 * t * (1 - t), d = t * t; path.push(a * P.x + b * cx + d * Q.x, a * P.z + b * cz + d * Q.z, 'D', vlim); }
         } else if (move === 'U') {
-          for (const [x, z] of uturnPoints(city, e, e.laneOff[lane], next.laneOff[nl]).slice(1)) path.push(x, z, 'D', 3.2, true);
+          for (const [x, z] of uturnPoints(city, e, city.laneW(e, lane, e.len), city.laneW(next, nl, 0)).slice(1)) path.push(x, z, 'D', 3.2, true);
         } else if (move === 'S' && e.dx * next.sdx + e.dz * next.sdz > 0.998) {
           const n = Math.max(2, Math.ceil(Math.hypot(Q.x - P.x, Q.z - P.z)));
           for (let i = 1; i <= n; i++) path.push(lerp(P.x, Q.x, i / n), lerp(P.z, Q.z, i / n), 'D', vlim, !node.bend);
         } else {
           const vt = (move === 'R' ? 6 : move === 'L' ? 7.8 : move === 'S' ? vlim : 9.5) * prof.turnK;
-          const tp = turnPoints(P, e.dx, e.dz, Q, next.sdx, next.sdz, e.laneOff[lane], 20, Math.min(e.hw, next.hw), Math.min(e.kerb, next.kerb), move === 'L');
+          const tp = turnPoints(P, e.dx, e.dz, Q, next.sdx, next.sdz, city.laneW(e, lane, uEnd), 20, Math.min(e.hw, next.hw), Math.min(e.kerb, next.kerb), move === 'L');
           for (const [x, z] of tp.slice(1)) path.push(x, z, 'D', vt, !node.bend);
           if (move !== 'S') signals.push({ s0: sLine - 55, s1: path.lastS - 2, dir: move.toUpperCase(), kind: 'turn' });
           // a left turn waits for oncoming traffic pulled out into the junction, not back at the line
@@ -940,6 +943,27 @@ export class FSD {
       if (d > 30) return false;
       return this.leftTurn(ev, car, tracks, d);
     }
+    if (ev.type === 'merge') {
+      // joining the freeway: a gap in its right lane (nothing alongside the merge point, nothing
+      // coming up behind it within a few seconds), else wait at the end of the ramp
+      if (ev.commit) return false;
+      if (d > 70) return false;
+      const fin = ev.fwyIn, fout = ev.fwyOut;
+      let clear = true;
+      for (const tr of tracks) {
+        if (tr.conf < 0.3 || tr.parked) continue;
+        for (const [q, past] of [[fin, false], [fout, true]]) {
+          if (!q || Math.cos(tr.h - q.h) < 0.5) continue;
+          const c = this.city.edgeLocal(q, tr.x, tr.z);
+          if (c.w < 0 || c.w > q.hw || this.laneOfW(q, c.w, c.u) !== q.lanes - 1) continue;
+          const toNode = past ? -c.u : q.len - c.u; // metres before the merge point (negative: past it)
+          if (toNode > -6 && toNode < Math.max(28, tr.v * 3.2 + 6)) clear = false;
+        }
+      }
+      if (clear) { ev.okSince ??= this.vision.t; if (d < 30 && this.vision.t - ev.okSince > 0.3) { ev.commit = true; return false; } return false; }
+      ev.okSince = null; ev.reason = 'gap';
+      return true;
+    }
     if (ev.type === 'exit') {
       if (ev.phase === 'go') return false;
       if (ev.phase === 'approach') { if (d < 0.6 && v < 0.12) { ev.phase = 'judge'; ev.t0 = this.vision.t; } ev.reason = 'exit'; return true; }
@@ -1079,7 +1103,7 @@ export class FSD {
     const tb = clamp(prof.gapT * 0.3, 0.9, 2.0), aGo = prof.a * 0.85, fx = Math.cos(car.h), fz = Math.sin(car.h);
     const cand = [];
     for (const tr of tracks) {
-      if (tr.parked || tr.conf < 0.25) continue;
+      if (tr.parked || tr.conf < 0.25 || Math.abs((tr.y || 0) - car.y) > 3) continue;
       const rx = tr.x - car.cx, rz = tr.z - car.cz;
       if (rx * rx + rz * rz > 110 * 110) continue;
       const dh = Math.abs(wrapAngle(tr.h - car.h)), ahead = rx * fx + rz * fz;
@@ -1132,7 +1156,7 @@ export class FSD {
     const committed = [];
     for (const ev of this.events) if (!ev.done && (ev.commit || ev.phase === 'go')) committed.push([ev.s - 4, (ev.sEnd ?? ev.s + 25) + 2]);
     for (const tr of tracks) {
-      if (tr.conf < 0.3 || tr.parked) continue;
+      if (tr.conf < 0.3 || tr.parked || Math.abs((tr.y || 0) - car.y) > 3) continue;
       const rx = tr.x - car.x, rz = tr.z - car.z, dd = Math.hypot(rx, rz);
       if (dd > 70) continue;
       const dh = Math.abs(wrapAngle(tr.h - car.h));
@@ -1177,6 +1201,7 @@ export class FSD {
   // returns control command
   step(dt, car, simT) {
     const prof = this.prof;
+    this.carY = car.y || 0;
     this.updateProgress(car);
     const tracks = [...this.vision.tracks.values()];
     const v = Math.abs(car.v);
@@ -1269,7 +1294,7 @@ export class FSD {
     if (!rev) {
       let gap = Infinity, vl = 0, leadTr = null;
       for (const tr of tracks) {
-        if (tr.conf < 0.3) continue;
+        if (tr.conf < 0.3 || Math.abs((tr.y || 0) - car.y) > 3) continue;
         const dx = tr.x - car.x, dz = tr.z - car.z;
         if (dx * dx + dz * dz > (look + 15) ** 2) continue;
         let bd = 1e9, bj = -1;
@@ -1380,21 +1405,23 @@ export class FSD {
     const seg = this.segs.find((s) => this.sCur >= s.s0 && this.sCur < s.s1);
     if (!seg) return null;
     const e = seg.e, city = this.city;
-    if (e.lanes !== 2 || e.curve) return null;
+    if (e.lanes < 2 || e.curve) return null;
     const loc = city.edgeLocal(e, car.x, car.z);
     // the street carries on through bends: measure the room to the next real junction
     let toLine = e.len - e.sb - loc.u;
     for (let i = this.segs.indexOf(seg) + 1, prev = e; i < this.segs.length && city.nodes[prev.b].bend; i++) { toLine += this.segs[i].e.len; prev = this.segs[i].e; }
     if (toLine < 35 || loc.u < e.sa + 3) return null;
     if (this.events.some((ev) => !ev.done && ev.type !== 'turn' && ev.s - this.sCur < 30 && ev.s - this.sCur > -5)) return null;
-    const cur = this.laneOfW(e, loc.w), other = 1 - cur;
+    const cur = this.laneOfW(e, loc.w, loc.u);
     if (seg.lane !== cur) return null; // a lane change is already under way
-    const allowed = seg.move ? [0, 1].filter((l) => city.laneMoves[e.id][l].includes(seg.move)) : [0, 1];
-    if (!allowed.includes(other)) return null;
+    // the lanes next to ours that can make our turn
+    const all = [...Array(e.lanes).keys()];
+    const allowed = (seg.move ? all.filter((l) => city.laneMoves[e.id][l].includes(seg.move)) : all).filter((l) => Math.abs(l - cur) <= 1);
+    if (allowed.length < 2) return null;
     let want = null;
-    if (toLine < 160 && this.bestLane(e, allowed, cur, loc.u) === other) want = other;
-    // passing needs room to change lanes calmly (~3.5 s) before the next junction
-    if (this.prof.overtake && this.lead && this.leadGap < 45 && this.lead.v < this.setSpeed(e) - 3 && toLine > Math.max(60, v * 4.2 + 30)) want = other;
+    if (toLine < 160) { const b = this.bestLane(e, allowed, cur, loc.u); if (b !== cur) want = b; }
+    // passing (on the left for choice) needs room to change lanes calmly (~3.5 s) before the next junction
+    if (this.prof.overtake && this.lead && this.leadGap < 45 && this.lead.v < this.setSpeed(e) - 3 && toLine > Math.max(60, v * 4.2 + 30)) want = allowed.includes(cur - 1) ? cur - 1 : allowed.includes(cur + 1) ? cur + 1 : null;
     if (want === null || !this.laneFree(e, want, loc.u, v)) return null;
     // no weaving: at least 6 s between lane changes
     if (this.vision.t - (this.lcT ?? -99) < 6) return null;

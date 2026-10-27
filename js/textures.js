@@ -176,6 +176,40 @@ export function localEndTextures() {
   return { map: toTex(c), normalMap: toTex(normalFromHeight(hm, W, H, 3), { srgb: false }) };
 }
 
+// Freeway carriageway: 15.6 m across (2 m median apron, three 3.7 m lanes, 2.5 m shoulder), 12 m along.
+export function freewayTextures() {
+  const W = 512, H = 400, mx = 15.6 / W, my = 12 / H;
+  const { c, ctx, hm } = asphaltPixels(W, H, 91, [56, 57, 60]);
+  const X = (m) => (m + 2) / mx;
+  for (const off of [1.85, 5.55, 9.25]) for (const t of [-0.85, 0.85]) {
+    const x = X(off + t), g = ctx.createLinearGradient(x - 0.4 / mx, 0, x + 0.4 / mx, 0);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.5, 'rgba(10,10,12,0.14)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(x - 0.4 / mx, 0, 0.8 / mx, H);
+  }
+  const paint = wornPaint(W, H, 93, (p) => {
+    p.fillStyle = YELLOW; p.fillRect(X(0.12), 0, 0.14 / mx, H);
+    p.fillStyle = WHITE;
+    for (const w of [3.7, 7.4]) p.fillRect(X(w - 0.07), 0, 0.14 / mx, 3 / my);
+    p.fillRect(X(11.1), 0, 0.16 / mx, H);
+  });
+  ctx.drawImage(paint, 0, 0);
+  const pd = paint.getContext('2d').getImageData(0, 0, W, H).data;
+  for (let i = 0; i < W * H; i++) hm[i] += pd[i * 4 + 3] / 255 * 0.5;
+  return { map: toTex(c), normalMap: toTex(normalFromHeight(hm, W, H, 3), { srgb: false }) };
+}
+// Ramp: one 3.7 m lane with solid edge lines, 4.8 m across, 12 m along.
+export function rampTextures() {
+  const W = 160, H = 400, mx = 4.8 / W, my = 12 / H;
+  const { c, ctx, hm } = asphaltPixels(W, H, 95, [57, 58, 61]);
+  const X = (m) => m / mx;
+  const paint = wornPaint(W, H, 97, (p) => { p.fillStyle = WHITE; p.fillRect(X(0.5), 0, 0.14 / mx, H); p.fillRect(X(4.16), 0, 0.14 / mx, H); });
+  ctx.drawImage(paint, 0, 0);
+  const pd = paint.getContext('2d').getImageData(0, 0, W, H).data;
+  for (let i = 0; i < W * H; i++) hm[i] += pd[i * 4 + 3] / 255 * 0.5;
+  void my;
+  return { map: toTex(c), normalMap: toTex(normalFromHeight(hm, W, H, 3), { srgb: false }) };
+}
+
 export function asphaltTextures(seed = 61, base) {
   const { c, hm } = asphaltPixels(512, 512, seed, base);
   return { map: toTex(c), normalMap: toTex(normalFromHeight(hm, 512, 512, 3), { srgb: false }) };

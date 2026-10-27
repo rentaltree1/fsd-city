@@ -249,13 +249,13 @@ export class CarScreen {
     c.save(); c.translate(ox, oy); c.rotate(this.rotAngle()); c.scale(z, z); c.translate(-cen.x, -cen.z);
     const relief = this.reliefImage();
     c.globalAlpha = T === THEME.night ? 0.35 : 1;
-    c.drawImage(relief, -3600, -3600, 7200, 7200);
+    { const sp = g.city.terrain.size; c.drawImage(relief, -sp / 2, -sp / 2, sp, sp); }
     c.globalAlpha = 1;
     // the city: flat ground inside the limits, then every street and junction at its real width
     const poly = (pts, close = true) => { c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]))); if (close) c.closePath(); };
     poly(city.cityPoly.map((p) => [p.x, p.z])); c.fillStyle = T.blockSub; c.fill();
     c.lineCap = 'butt'; c.strokeStyle = T.road;
-    for (const hw of [7.6, 4.6]) {
+    for (const hw of [13.6, 7.6, 4.6, 4.2]) {
       c.lineWidth = hw * 2; c.beginPath();
       for (const e of city.edges) if (!e.curve && e.a < e.b && e.hw === hw) { c.moveTo(e.ax, e.az); c.lineTo(e.bx, e.bz); }
       c.stroke();
@@ -345,7 +345,7 @@ export class CarScreen {
   // Shaded-relief image of the hills and mountains (built once from the terrain heights)
   reliefImage() {
     if (this._relief) return this._relief;
-    const t = this.g.city.terrain, N = 512, span = 7200, cell = span / N;
+    const t = this.g.city.terrain, N = 512, span = t.size, cell = span / N;
     const cv = document.createElement('canvas'); cv.width = cv.height = N;
     const ctx = cv.getContext('2d'), img = ctx.createImageData(N, N), d = img.data;
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {

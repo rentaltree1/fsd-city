@@ -3,7 +3,7 @@
 // bridges, Broadway, downtown towers, midtown blocks, suburban houses, parks, POI lots and Superchargers.
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { S, CURB, WALK, STOP, nodeCoord, rng, clamp } from './config.js';
+import { S, CURB, WALK, STOP, nodeCoord, rng, clamp, smooth } from './config.js';
 import * as TX from './textures.js';
 import { Terrain } from './terrain.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -41,11 +41,22 @@ export const ROAD = {
   art: { hw: 7.6, sw: 4.0, lanes: 2, off: [1.8, 5.4], kerb: 6.0 },
   dt: { hw: 7.6, sw: 4.4, lanes: 2, off: [1.8, 5.4], kerb: 4.5 },
   loc: { hw: 4.6, sw: 3.2, lanes: 1, off: [2.2], kerb: 5.0 },
+  // the freeway: each carriageway is its own one-way street, measured from its median-side edge
+  // (three 3.7 m lanes, then a 2.5 m shoulder); the ramps are single lanes whose centre line
+  // starts on the freeway's right lane and ends on the ramp itself (see buildGraph)
+  fwy: { hw: 13.6, sw: 0, lanes: 3, off: [1.85, 5.55, 9.25], kerb: 8.0 },
+  ramp: { hw: 4.2, sw: 0, lanes: 1, off: [0], kerb: 8.0 },
 };
 export const BULB_R = 11;                // cul-de-sac kerb radius
+// the city's main radii: the ring road, the midtown loop, Circle Blvd round downtown, and the beltway
+export const RING_R = 1770, LOOP_R = 1190, CIRC_R = 600, FWY_R = 2270;
+const MAPK = 1.75;                       // the old 20x20 planning chart, stretched to the bigger city
+const FWY_LIMIT = 29.1, RAMP_LIMIT = 15.6; // 65 and 35 mph
+const OVERPASS_H = 7.0;                  // the freeway's height where it bridges a spoke road
+const EXT_R = 470;                       // how far past the beltway an interchange spoke runs
 // river course through the hills; inside the city it is replaced by two lazy bends (see buildGraph)
-const RIVER_CTRL = [[-3500, -1520], [-2900, -1420], [-2350, -1120], [-1950, -1010], [-1620, -770], [-1300, -680], [-1100, -550],
-  [1100, 550], [1320, 690], [1620, 860], [1930, 830], [2330, 1110], [2850, 1310], [3500, 1500]];
+const RIVER_CTRL = [[-6000, -2660], [-5075, -2485], [-4110, -1960], [-3410, -1770], [-2835, -1350], [-2275, -1190], [-1925, -960],
+  [1925, 960], [2310, 1210], [2835, 1500], [3380, 1450], [4080, 1940], [4990, 2290], [6000, 2620]];
 const FAR = { d: 1e9, ad: 1e9, s: 0, tx: 1, tz: 0 };
 
 export function pointInPoly(x, z, poly) {
@@ -171,11 +182,11 @@ export function moveType(e1, e2) {
 export const isLeft = (m) => m === 'L' || m === 'l';
 
 // Winding two-lane roads that leave the city and climb into the hills, looping back to town.
+// Winding two-lane roads that start at the far end of an interchange spoke and climb into the hills,
+// ending in a turnaround at a lookout.
 const HILL_ROADS = [
-  { name: 'Ridge Hwy', a: [990, -150], b: [960, -650], limit: 20, lookout: 'Ridgeview Lookout',
-    ctrl: [[1035, -150], [1180, -112], [1340, -55], [1505, -128], [1640, -300], [1652, -500], [1525, -668], [1335, -736], [1160, -672], [1040, -650]] },
-  { name: 'Canyon Rd', a: [-990, 250], b: [-950, 650], limit: 15.6, lookout: 'Canyon Overlook', houses: true,
-    ctrl: [[-1035, 250], [-1195, 288], [-1380, 226], [-1565, 330], [-1648, 522], [-1522, 702], [-1300, 722], [-1150, 652], [-1040, 650]] },
+  { name: 'Ridge Hwy', ix: 'E', limit: 20, lookout: 'Ridgeview Lookout', ctrl: [[2900, 180], [3120, 40], [3330, -170], [3480, -420], [3440, -700], [3250, -900]] },
+  { name: 'Canyon Rd', ix: 'W', limit: 15.6, lookout: 'Canyon Overlook', houses: true, ctrl: [[-2950, 360], [-3190, 500], [-3400, 720], [-3480, 1000], [-3340, 1260], [-3100, 1400]] },
 ];
 
 export class City {
@@ -210,6 +221,7 @@ export class City {
     this.buildGround();
     this.buildRoads();
     this.buildHillRoadMeshes();
+    this.buildFreewayMeshes();
     this.buildRiver();
     this.buildBlocks();
     this.buildFurniture();
@@ -223,35 +235,50 @@ export class City {
   // to the next one on an arterial.
   buildGraph() {
     const R = rng(9187), TAU = Math.PI * 2;
-    const edgeR = (a) => 1010 * (1 + 0.06 * Math.sin(3 * a + 0.7) + 0.045 * Math.sin(5 * a + 2.3) + 0.025 * Math.sin(8 * a + 4.1));
-    const CC = [30, 20], circR = (a) => 540 * (1 + 0.07 * Math.sin(2 * a + 1.1) + 0.04 * Math.sin(5 * a));
+    const edgeR = (a) => RING_R * (1 + 0.06 * Math.sin(3 * a + 0.7) + 0.045 * Math.sin(5 * a + 2.3) + 0.025 * Math.sin(8 * a + 4.1));
+    const loopR = (a) => LOOP_R * (1 + 0.05 * Math.sin(2 * a + 2.4) + 0.04 * Math.sin(4 * a + 0.6) + 0.02 * Math.sin(7 * a + 1.9));
+    const fwyR = (a) => FWY_R * (1 + 0.035 * Math.sin(2 * a + 0.9) + 0.028 * Math.sin(3 * a + 2.0) + 0.012 * Math.sin(5 * a + 4.4));
+    this.ringR = edgeR; this.fwyR = fwyR;
+    const CC = [50, 35], circR = (a) => CIRC_R * (1 + 0.07 * Math.sin(2 * a + 1.1) + 0.04 * Math.sin(5 * a));
     const inCircle = (x, z, m = 0) => Math.hypot(x - CC[0], z - CC[1]) < circR(Math.atan2(z - CC[1], x - CC[0])) + m;
     const rc = new THREE.CatmullRomCurve3(RIVER_CTRL.map((p) => new THREE.Vector3(p[0], 0, p[1])), false, 'centripetal');
     this.riverPts = rc.getSpacedPoints(Math.round(rc.getLength() / 4))
-      .map((v) => ({ x: v.x, z: Math.abs(v.x) < 1100 ? v.x / 2 + 75 * Math.sin((Math.PI * v.x) / 550) : v.z }));
+      .map((v) => ({ x: v.x, z: Math.abs(v.x) < 1925 ? v.x / 2 + 130 * Math.sin((Math.PI * v.x) / 962) : v.z }));
     this.buildRiverIndex();
 
     const lines = [];
-    const mkLine = (pts, cls, name, o = {}) => { const L = { pts, cls, name, closed: !!o.closed, ends: o.ends || ['T', 'T'], kind: o.kind || cls, limit: o.limit }; lines.push(L); return L; };
+    const mkLine = (pts, cls, name, o = {}) => { const L = { pts, cls, name, closed: !!o.closed, ends: o.ends || ['T', 'T'], kind: o.kind || cls, limit: o.limit, oneWay: !!o.oneWay, level: o.level || 0, offFn: o.offFn || null, maxSeg: o.maxSeg || 170 }; lines.push(L); return L; };
     const sample = (ctrl, step = 4) => {
       const c = new THREE.CatmullRomCurve3(ctrl.map((p) => new THREE.Vector3(p[0], 0, p[1])), false, 'centripetal');
       return c.getSpacedPoints(Math.max(2, Math.round(c.getLength() / step))).map((v) => [v.x, v.z]);
     };
-    // ---- arterials
-    { const pts = []; for (let k = 0; k < 1600; k++) { const a = (k / 1600) * TAU, r = edgeR(a); pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'art', 'Perimeter Rd', { closed: true, kind: 'ring', limit: 17.9 }); }
-    { const pts = []; for (let k = 0; k < 900; k++) { const a = (k / 900) * TAU, r = circR(a); pts.push([CC[0] + Math.cos(a) * r, CC[1] + Math.sin(a) * r]); } mkLine(pts, 'art', 'Circle Blvd', { closed: true, kind: 'circ', limit: 15.6 }); }
+    // ---- arterials: three loops (the ring road at the city limits, the midtown loop, Circle Blvd
+    // round downtown), eight spokes, Broadway across the lot and a few streets through the core
+    { const pts = []; for (let k = 0; k < 2800; k++) { const a = (k / 2800) * TAU, r = edgeR(a); pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'art', 'Perimeter Rd', { closed: true, kind: 'ring', limit: 17.9 }); }
+    { const pts = []; for (let k = 0; k < 1900; k++) { const a = (k / 1900) * TAU, r = loopR(a); pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'art', 'Lakeshore Loop', { closed: true, kind: 'loop', limit: 17.9 }); }
+    { const pts = []; for (let k = 0; k < 1000; k++) { const a = (k / 1000) * TAU, r = circR(a); pts.push([CC[0] + Math.cos(a) * r, CC[1] + Math.sin(a) * r]); } mkLine(pts, 'art', 'Circle Blvd', { closed: true, kind: 'circ', limit: 15.6 }); }
     const perim = (a, extra) => [Math.cos(a) * (edgeR(a) + extra), Math.sin(a) * (edgeR(a) + extra)];
     {
       const a0 = Math.atan2(700, -760), a1 = Math.atan2(-760, 700);
-      mkLine(sample([perim(a0, 7), perim(a0, -70), [-430, 330], [-90, 50], [250, -210], [480, -520], perim(a1, -70), perim(a1, 7)]), 'art', 'Broadway', { kind: 'bw', limit: 15.6 });
+      mkLine(sample([perim(a0, 7), perim(a0, -70), [-752, 577], [-157, 87], [437, -367], [840, -910], perim(a1, -70), perim(a1, 7)]), 'art', 'Broadway', { kind: 'bw', limit: 15.6 });
     }
-    const SPOKES = [[0.1, 'Edgewood Dr'], [0.95, 'Meade St'], [1.75, 'Ballard Rd'], [3.05, 'Apple Creek Rd'], [3.85, 'Lightning Dr'], [4.65, 'French Rd']];
-    for (const [a, name] of SPOKES) {
+    // the spokes at 0.1, 1.75, 3.05 and 4.65 rad carry on past the ring road to the beltway interchanges
+    const SPOKES = [[0.1, 'Edgewood Dr', 'E'], [0.95, 'Meade St'], [1.75, 'Ballard Rd', 'S'], [2.45, 'Harbor Pkwy'], [3.05, 'Apple Creek Rd', 'W'], [3.85, 'Lightning Dr'], [4.65, 'French Rd', 'N'], [5.4, 'Summit Ave']];
+    const inter = []; // the interchanges: angle, the spoke extension line, the ramp terminals
+    for (const [a, name, ix] of SPOKES) {
       let rc0 = 250;
       while (inCircle(Math.cos(a) * rc0, Math.sin(a) * rc0)) rc0 += 2;
-      const r0 = rc0 - 7, r1 = edgeR(a) + 7, ph = R() * 6.28, pts = [];
-      for (let r = r0; r <= r1; r += 4) { const t = (r - r0) / (r1 - r0), aa = a + 0.045 * Math.sin(Math.PI * t * 1.4 + ph) * (r0 / r); pts.push([Math.cos(aa) * r, Math.sin(aa) * r]); }
+      const r0 = rc0 - 7, r1 = edgeR(a) + 7, ph = R() * 6.28, pts = [], amp = ix ? 0 : 0.045;
+      for (let r = r0; r <= r1; r += 4) { const t = (r - r0) / (r1 - r0), aa = a + amp * Math.sin(Math.PI * t * 1.4 + ph) * (r0 / r); pts.push([Math.cos(aa) * r, Math.sin(aa) * r]); }
       mkLine(pts, 'art', name, { kind: 'spoke', limit: 17.9 });
+      if (!ix) continue;
+      // the extension: straight out under the beltway to a turnaround (the theme park, a hill road or
+      // a park-and-ride sits on the far part)
+      const o = [Math.cos(a), Math.sin(a)], rEnd = fwyR(a) + EXT_R, ext = [];
+      for (let r = edgeR(a) - 7; r <= rEnd; r += 4) ext.push([o[0] * r, o[1] * r]);
+      const L = mkLine(ext, 'art', name, { kind: 'spokex', limit: 17.9, ends: ['T', 'D'], maxSeg: 420 });
+      L.r0 = edgeR(a) - 7; L.o = o; L.a = a; L.ix = ix;
+      inter.push({ a, ix, L });
     }
     const clipToCircle = (pts) => {
       const inside = pts.map(([x, z]) => inCircle(x, z, 7));
@@ -263,27 +290,94 @@ export class City {
       }
       return pts.slice(best[0], best[1] + 1);
     };
-    { const pts = []; for (let x = -900; x <= 900; x += 4) pts.push([x, 165 + 38 * Math.sin(x / 260 + 0.4)]); mkLine(clipToCircle(pts), 'dt', 'Main St', { kind: 'core', limit: 13.4 }); }
-    { const pts = []; for (let z = -900; z <= 900; z += 4) pts.push([155 + 34 * Math.sin(z / 240 + 1), z]); mkLine(clipToCircle(pts), 'dt', 'Park Ave', { kind: 'core', limit: 13.4 }); }
+    { const pts = []; for (let x = -1000; x <= 1000; x += 4) pts.push([x, 185 + 55 * Math.sin(x / 420 + 0.4)]); mkLine(clipToCircle(pts), 'dt', 'Main St', { kind: 'core', limit: 13.4 }); }
+    { const pts = []; for (let x = -1000; x <= 1000; x += 4) pts.push([x, -205 + 48 * Math.sin(x / 380 + 2.1)]); mkLine(clipToCircle(pts), 'dt', 'Market St', { kind: 'core', limit: 13.4 }); }
+    { const pts = []; for (let z = -1000; z <= 1000; z += 4) pts.push([175 + 50 * Math.sin(z / 400 + 1), z]); mkLine(clipToCircle(pts), 'dt', 'Park Ave', { kind: 'core', limit: 13.4 }); }
+    { const pts = []; for (let z = -1000; z <= 1000; z += 4) pts.push([-215 + 44 * Math.sin(z / 360 + 2.6), z]); mkLine(clipToCircle(pts), 'dt', 'Union Ave', { kind: 'core', limit: 13.4 }); }
     const arterials = lines.slice();
 
-    // ---- distance to the arterials, city mask, river, and the superblocks between them (5 m raster)
-    const GS = 5, GN = 480, G0 = -1200, gi = (v) => Math.floor((v - G0) / GS), cx = (i) => G0 + (i + 0.5) * GS;
-    const distA = new Float32Array(GN * GN).fill(1e4);
-    for (const L of arterials) for (const [x, z] of L.pts) {
-      const i0 = gi(x), j0 = gi(z), rr = 22;
+    // ---- the beltway: two one-way carriageways round the city (clockwise on the inside, its right
+    // side toward town), bridging the four spoke roads; diamond interchanges with four ramps each.
+    // A ramp's street line starts on the freeway's median-side edge and runs 120 m at a slight angle
+    // while its lane offset shrinks from the right lane (9.25 m) to zero, so the ramp lane peels off
+    // the right lane smoothly and the far end is an ordinary one-lane street at the terminal.
+    const NF = 3600;
+    { const pts = []; for (let k = 0; k < NF; k++) { const a = (k / NF) * TAU, r = fwyR(a) - 2; pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'fwy', 'Interstate 26', { closed: true, kind: 'fwy', limit: FWY_LIMIT, oneWay: true, level: 1, maxSeg: 300 }); }
+    { const pts = []; for (let k = NF - 1; k >= 0; k--) { const a = (k / NF) * TAU, r = fwyR(a) + 2; pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'fwy', 'Interstate 26', { closed: true, kind: 'fwy', limit: FWY_LIMIT, oneWay: true, level: 1, maxSeg: 300 }); }
+    const RAMP_OFF = ROAD.fwy.off[2], TAPER = 120, PHI = 7.9 * Math.PI / 180, D1 = 330, D2 = 330, TERM = 95;
+    const cubic = (P0, P1, P2, P3, n) => { const out = []; for (let i = 0; i <= n; i++) { const t = i / n, u = 1 - t; out.push([u * u * u * P0[0] + 3 * u * u * t * P1[0] + 3 * u * t * t * P2[0] + t * t * t * P3[0], u * u * u * P0[1] + 3 * u * u * t * P1[1] + 3 * u * t * t * P2[1] + t * t * t * P3[1]]); } return out; };
+    this.interchanges = [];
+    for (const it of inter) {
+      const a = it.a, o = it.L.o, t = [-Math.sin(a), Math.cos(a)];
+      const rc = fwyR(a), rA = rc - TERM, rB = rc + TERM;
+      const A = [o[0] * rA, o[1] * rA], B = [o[0] * rB, o[1] * rB], C = [o[0] * rc, o[1] * rc];
+      const onFwy = (da, side) => { const aa = a + da, r = fwyR(aa) + side * 2; return [Math.cos(aa) * r, Math.sin(aa) * r]; };
+      const rot = (v, s) => [v[0] * Math.cos(s) - v[1] * Math.sin(s), v[0] * Math.sin(s) + v[1] * Math.cos(s)]; // rotate anticlockwise in (x,z)
+      const add = (p, v, s) => [p[0] + v[0] * s, p[1] + v[1] * s];
+      // exit ramp from the inner (clockwise) carriageway: leaves before the bridge, swings in to terminal A
+      const exitFn = (s) => RAMP_OFF * clamp(1 - (s - 3) / TAPER, 0, 1);
+      const entFn = (L) => (s) => RAMP_OFF * clamp(1 - (L - s) / TAPER, 0, 1);
+      const ramp = (pts, name) => { const l = mkLine(pts, 'ramp', name, { kind: 'ramp', limit: RAMP_LIMIT, oneWay: true, maxSeg: 500 }); l.cum = null; return l; };
+      const lineLen = (pts) => { let s = 0; for (let i = 1; i < pts.length; i++) s += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return s; };
+      // (rot(v, +s) turns v from o toward t; the right-hand side of t is -o, toward town, and the
+      // right-hand side of -t is +o. Each ramp line is started 3 m beyond the street it joins so the
+      // crossing is found; the stubs are dropped by buildNet.)
+      {
+        // exit from the inner (clockwise) carriageway: leaves before the bridge, swings in to terminal A
+        const d1 = onFwy(-D1 / rc, -1), h1 = rot(t, PHI), E = add(d1, h1, TAPER), pts = [];
+        for (let s = -3; s <= TAPER; s += 4) pts.push(add(d1, h1, s));
+        pts.push(...cubic(E, add(E, h1, 70), add(A, t, -70), A, 40).slice(1), add(A, t, 3));
+        ramp(pts, `${it.L.name} exit`).offFn = exitFn;
+        // entrance to the inner carriageway from terminal A: merges after the bridge
+        const m1 = onFwy(D2 / rc, -1), h2 = rot(t, -PHI), S2 = add(m1, h2, -TAPER), pts2 = [add(A, t, -3), ...cubic(A, add(A, t, 70), add(S2, h2, -70), S2, 40)];
+        for (let s = 4; s <= TAPER + 3; s += 4) pts2.push(add(S2, h2, s));
+        ramp(pts2, `${it.L.name} on-ramp`).offFn = entFn(lineLen(pts2) - 3);
+      }
+      {
+        // the outer (anticlockwise) carriageway: its right is away from town (+o)
+        const tO = [-t[0], -t[1]], d2 = onFwy(D1 / rc, 1), h3 = rot(tO, PHI), E = add(d2, h3, TAPER), pts = [];
+        for (let s = -3; s <= TAPER; s += 4) pts.push(add(d2, h3, s));
+        pts.push(...cubic(E, add(E, h3, 70), add(B, tO, -70), B, 40).slice(1), add(B, tO, 3));
+        ramp(pts, `${it.L.name} exit`).offFn = exitFn;
+        const m2 = onFwy(-D2 / rc, 1), h4 = rot(tO, -PHI), S4 = add(m2, h4, -TAPER), pts2 = [add(B, tO, -3), ...cubic(B, add(B, tO, 70), add(S4, h4, -70), S4, 40)];
+        for (let s = 4; s <= TAPER + 3; s += 4) pts2.push(add(S4, h4, s));
+        ramp(pts2, `${it.L.name} on-ramp`).offFn = entFn(lineLen(pts2) - 3);
+      }
+      this.interchanges.push({ a, ix: it.ix, x: C[0], z: C[1], A, B, name: it.L.name, line: it.L });
+    }
+    // the bridges over the spokes: how high the freeway is at any point (a smooth hump over each crossing)
+    this.fwyY = (x, z) => {
+      let y = 0;
+      for (const ic of this.interchanges) { const d = Math.hypot(x - ic.x, z - ic.z); if (d < 150) y += OVERPASS_H * (1 - smooth((d - 22) / 118)); }
+      return Math.min(OVERPASS_H, y);
+    };
+    // no side street may join a spoke extension along the mall and theme-park frontages or at the ramps
+    this.noJoin = [];
+    for (const ic of this.interchanges) {
+      const o = ic.line.o, r0 = ic.line.r0;
+      const zone = (s0, s1) => this.noJoin.push({ x: o[0] * (r0 + s0), z: o[1] * (r0 + s0), dx: o[0], dz: o[1], len: s1 - s0 });
+      zone(30, fwyR(ic.a) + EXT_R - r0); // the whole extension: the mall on the inside, ramps, the park outside
+    }
+
+    // ---- distance to the arterials, city mask, river, and the superblocks between them (6 m raster)
+    const GS = 6, GN = 820, G0 = -2460, gi = (v) => Math.floor((v - G0) / GS), cx = (i) => G0 + (i + 0.5) * GS;
+    const distA = new Float32Array(GN * GN).fill(1e4), distJ = new Float32Array(GN * GN).fill(1e4);
+    const joinable = (L) => L.kind !== 'fwy' && L.kind !== 'ramp';
+    for (const L of lines) for (const [x, z] of L.pts) {
+      const i0 = gi(x), j0 = gi(z), rr = L.kind === 'fwy' ? 14 : 19, jn = joinable(L);
       for (let j = Math.max(0, j0 - rr); j <= Math.min(GN - 1, j0 + rr); j++) for (let i = Math.max(0, i0 - rr); i <= Math.min(GN - 1, i0 + rr); i++) {
         const d = Math.hypot(cx(i) - x, cx(j) - z), k = j * GN + i;
         if (d < distA[k]) distA[k] = d;
+        if (jn && d < distJ[k]) distJ[k] = d;
       }
     }
     const city = new Uint8Array(GN * GN), rivD = new Float32Array(GN * GN);
     for (let j = 0; j < GN; j++) for (let i = 0; i < GN; i++) {
       const x = cx(i), z = cx(j), k = j * GN + i;
-      if (Math.hypot(x, z) < edgeR(Math.atan2(z, x)) - 6) { city[k] = 1; rivD[k] = this.riverInfo(x, z).ad; }
+      if (Math.hypot(x, z) < fwyR(Math.atan2(z, x)) - 42) { city[k] = 1; rivD[k] = this.riverInfo(x, z).ad; }
     }
     const at = (arr, x, z, def) => { const i = gi(x), j = gi(z); return i < 0 || j < 0 || i >= GN || j >= GN ? def : arr[j * GN + i]; };
-    const dA = (x, z) => at(distA, x, z, 0), inCityR = (x, z) => at(city, x, z, 0) === 1, rD = (x, z) => at(rivD, x, z, 0);
+    const dA = (x, z) => at(distJ, x, z, 0), dAll = (x, z) => at(distA, x, z, 0), inCityR = (x, z) => at(city, x, z, 0) === 1, rD = (x, z) => at(rivD, x, z, 0);
     const lab = new Int32Array(GN * GN).fill(-1), comps = [];
     for (let k0 = 0; k0 < GN * GN; k0++) {
       if (lab[k0] >= 0 || !city[k0] || distA[k0] < 9) continue;
@@ -330,7 +424,7 @@ export class City {
       let u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
       for (const k of cells) { const x = cx(k % GN) - mx, z = cx((k / GN) | 0) - mz, u = x * ux + z * uz, v = x * vx + z * vz; u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
       const inComp = (x, z) => at(lab, x, z, -1) === cid;
-      const valid = (x, z) => inComp(x, z) && dA(x, z) >= P.buf && rD(x, z) >= 50;
+      const valid = (x, z) => inComp(x, z) && dAll(x, z) >= P.buf && rD(x, z) >= 50;
       const span = v1 - v0 - 2 * P.buf;
       if (span < -30) return;
       const nr = Math.max(1, Math.floor(Math.max(0, span) / P.rail) + 1), vs = [];
@@ -424,10 +518,11 @@ export class City {
     // junction ends in a cul-de-sac instead
     const artX = this.lineCrossings(arterials).map((c) => [c.x, c.z]), accepted = [];
     for (let k = tEnds.length - 1; k > 0; k--) { const q = Math.floor(R() * (k + 1)); [tEnds[k], tEnds[q]] = [tEnds[q], tEnds[k]]; }
+    const noJoinAt = (p) => this.noJoin.some((zn) => { const u = (p[0] - zn.x) * zn.dx + (p[1] - zn.z) * zn.dz, w = -(p[0] - zn.x) * zn.dz + (p[1] - zn.z) * zn.dx; return u > 0 && u < zn.len && Math.abs(w) < 60; });
     for (const t of tEnds) {
       const p = t.side ? t.L.pts[t.L.pts.length - 2] : t.L.pts[1];
       const far = (list, d) => list.every((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) > d);
-      if (far(accepted, 55) && far(artX, 80)) { accepted.push(p); continue; }
+      if (far(accepted, 55) && far(artX, 80) && !noJoinAt(p)) { accepted.push(p); continue; }
       const pts = t.L.pts;
       for (let n = t.L.ext[t.side]; n > 0; n--) t.side ? pts.pop() : pts.shift();
       while (pts.length > 2) { const e2 = t.side ? pts[pts.length - 1] : pts[0]; if (dA(e2[0], e2[1]) >= 36) break; t.side ? pts.pop() : pts.shift(); }
@@ -435,8 +530,20 @@ export class City {
     }
     this.buildNet(lines.filter((L) => L.pts.length >= 2));
     this.diagEdges = this.edges.filter((e) => e.kind === 'bw');
-    this.warp = (gx, gz) => [gx * 0.95, gz * 0.95];
+    this.warp = (gx, gz) => [gx * 0.95 * MAPK, gz * 0.95 * MAPK];
+    // where a ramp meets the freeway the through traffic never stops: those nodes are pass-throughs
+    // (no junction box, no controls); the ramp itself yields on its way in
+    for (const n of this.nodes) {
+      const es = [...Object.values(n.out), ...Object.values(n.in)];
+      if (es.some((e) => e.kind === 'fwy') && es.some((e) => e.kind === 'ramp')) { n.pass = true; n.fwy = true; }
+    }
+    for (const e of this.edges) if (e.kind === 'fwy') e.level = 1;
+    // the ramp terminals (where the spoke meets the ramps) and the terminal positions
+    for (const ic of this.interchanges) {
+      ic.nodeA = this.nearestNode(ic.A[0], ic.A[1]); ic.nodeB = this.nearestNode(ic.B[0], ic.B[1]);
+    }
   }
+  nearestNode(x, z) { let b = null, bd = 1e18; for (const n of this.nodes) { const d = (n.x - x) ** 2 + (n.z - z) ** 2; if (d < bd) { bd = d; b = n; } } return b; }
 
   // All crossings between segments of different lines: [{i, si, j, sj, x, z}]
   lineCrossings(lines) {
@@ -457,6 +564,8 @@ export class City {
     for (const list of hash.values()) for (let p = 0; p < list.length; p++) for (let q = p + 1; q < list.length; q++) {
       const [i, k] = list[p], [j, l] = list[q];
       if (i === j) continue;
+      // the freeway passes over or under everything but its own ramps
+      if ((lines[i].kind === 'fwy') !== (lines[j].kind === 'fwy') && lines[i].kind !== 'ramp' && lines[j].kind !== 'ramp') continue;
       const key = i < j ? `${i},${k},${j},${l}` : `${j},${l},${i},${k}`;
       if (seen.has(key)) continue; seen.add(key);
       const A = lines[i].pts, B = lines[j].pts, a = A[k], b = A[k + 1], c = B[l], d = B[l + 1];
@@ -548,7 +657,7 @@ export class City {
       let simp = dp(pts, L.cls === 'loc' ? 0.9 : 1.6);
       // long segments are split so lighting/parking spacing stays sensible
       const out = [simp[0]];
-      for (let k = 1; k < simp.length; k++) { const q = simp[k - 1], r = simp[k], n = Math.ceil(Math.hypot(r[0] - q[0], r[1] - q[1]) / 170); for (let t = 1; t <= n; t++) out.push([q[0] + ((r[0] - q[0]) * t) / n, q[1] + ((r[1] - q[1]) * t) / n]); }
+      for (let k = 1; k < simp.length; k++) { const q = simp[k - 1], r = simp[k], n = Math.ceil(Math.hypot(r[0] - q[0], r[1] - q[1]) / (L.maxSeg || 170)); for (let t = 1; t <= n; t++) out.push([q[0] + ((r[0] - q[0]) * t) / n, q[1] + ((r[1] - q[1]) * t) / n]); }
       simp = out;
       const ka = p.n0 >= 0 ? jf(p.n0) : `d${chains.length}a`, kb = p.n1 >= 0 ? jf(p.n1) : `d${chains.length}b`, pk = [ka, kb].sort().join('|');
       if (simp.length === 2 && pairSeen.has(pk)) simp.splice(1, 0, [(simp[0][0] + simp[1][0]) / 2 + 0.5, (simp[0][1] + simp[1][1]) / 2 + 0.5]);
@@ -566,6 +675,8 @@ export class City {
     const mkNode = (x, z, kind) => { const n = { id: this.nodes.length, x, z, gx: x, gz: z, kind, out: {}, in: {}, queue: [], offset: ((this.nodes.length * 37) % 8) * 4 }; this.nodes.push(n); return n; };
     const getJ = (k, p, kind) => { if (!nodeFor.has(k)) nodeFor.set(k, mkNode(p[0], p[1], kind)); return nodeFor.get(k); };
     const lineSeg = new Map();
+    // distance along a line of the point nearest p (for ramps, whose lane offset changes along them)
+    const sOn = (L, p) => { let bi = 0, bd = 1e18; for (let i = 0; i < L.pts.length; i++) { const d = (L.pts[i][0] - p[0]) ** 2 + (L.pts[i][1] - p[1]) ** 2; if (d < bd) { bd = d; bi = i; } } return L.cum[bi]; };
     for (const c of chains) {
       if (cf(c.ka) !== big) continue;
       const L = c.L, spec = ROAD[L.cls];
@@ -576,14 +687,23 @@ export class City {
       for (let k = 0; k + 1 < ns.length; k++) {
         const A = ns[k], B = ns[k + 1];
         if (A === B || Math.hypot(B.x - A.x, B.z - A.z) < 1) continue;
+        const offA = L.offFn ? [L.offFn(sOn(L, [A.x, A.z]))] : spec.off, offB = L.offFn ? [L.offFn(sOn(L, [B.x, B.z]))] : spec.off;
         for (const [P, Q] of [[A, B], [B, A]]) {
           const e = this.addStraight(P, Q, 'n' + Q.id, L.kind === 'bw' ? 'd' : 'r', L.limit || 11.2, L.name);
-          Object.assign(e, { cls: L.cls, kind: L.kind, hw: spec.hw, sw: spec.sw, lanes: spec.lanes, laneOff: spec.off, kerb: spec.kerb, chainPos: pos });
+          const fwd = P === A;
+          Object.assign(e, { cls: L.cls, kind: L.kind, hw: spec.hw, sw: spec.sw, lanes: spec.lanes, laneOff: fwd ? offA : offB, laneOff1: fwd ? offB : offA, kerb: spec.kerb, chainPos: pos, noEntry: L.oneWay && !fwd });
         }
         pos++;
       }
       lineSeg.set(L, pos);
     }
+  }
+  // lane l's offset from the street line at u (ramps blend from the freeway's right lane to their own line)
+  laneW(e, l, u) {
+    const a = e.laneOff[Math.min(l, e.laneOff.length - 1)];
+    if (!e.laneOff1 || e.laneOff1 === e.laneOff) return a;
+    const b = e.laneOff1[Math.min(l, e.laneOff1.length - 1)];
+    return a + (b - a) * clamp(u / Math.max(1e-6, e.len), 0, 1);
   }
   addStraight(A, B, dir, axis, limit, name) {
     const dx = B.x - A.x, dz = B.z - A.z, len = Math.hypot(dx, dz), ux = dx / len, uz = dz / len;
@@ -662,17 +782,12 @@ export class City {
       return e;
     };
     for (const R of HILL_ROADS) {
-      // a bend of the ring road well away from any junction
-      const jns = this.nodes.filter((n) => Object.keys(n.out).length > 2);
-      const ringNode = ([x, z]) => this.nodes.filter((n) => n.kind === 'ring' && Object.keys(n.out).length === 2 && jns.every((j) => Math.hypot(j.x - n.x, j.z - n.z) > 70))
-        .reduce((b, n) => ((n.x - x) ** 2 + (n.z - z) ** 2 < (b.x - x) ** 2 + (b.z - z) ** 2 ? n : b));
-      const A = ringNode(R.a), B = ringNode(R.b);
-      // leave the ring road heading straight out of town, then pick up the route through the hills
-      const nrm = (x, z) => { const l = Math.hypot(x, z); return [x / l, z / l]; };
-      const d0 = nrm(A.x, A.z), d1 = nrm(B.x, B.z), rOut = Math.max(Math.hypot(A.x, A.z), Math.hypot(B.x, B.z)) + 70;
-      const ctrl = R.ctrl.filter(([x, z]) => Math.hypot(x, z) > rOut);
-      const pts = [[A.x, A.z], [A.x + d0[0] * 30, A.z + d0[1] * 30], [A.x + d0[0] * 60, A.z + d0[1] * 60], ...ctrl,
-        [B.x + d1[0] * 60, B.z + d1[1] * 60], [B.x + d1[0] * 30, B.z + d1[1] * 30], [B.x, B.z]];
+      const ic = this.interchanges.find((c) => c.ix === R.ix);
+      if (!ic) continue;
+      // the road begins at the turnaround at the far end of the interchange spoke
+      const o = ic.line.o, rEnd = this.fwyR(ic.a) + EXT_R;
+      const A = this.nearestNode(o[0] * rEnd, o[1] * rEnd);
+      const pts = [[A.x, A.z], [A.x + o[0] * 40, A.z + o[1] * 40], ...R.ctrl];
       const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(p[0], 0, p[1])), false, 'centripetal');
       const total = curve.getLength(), ns = Math.round(total / 2);
       const sp = curve.getSpacedPoints(ns).map((v) => ({ x: v.x, z: v.z }));
@@ -684,6 +799,9 @@ export class City {
         const pn = { id: this.nodes.length, x: p.x, z: p.z, pass: true, light: false, offset: 0, out: {}, in: {}, queue: [] };
         this.nodes.push(pn); nodes.push(pn);
       }
+      // the lookout: a turnaround at the end of the road, up in the hills
+      const B = { id: this.nodes.length, x: sp[ns].x, z: sp[ns].z, hill: true, light: false, offset: 0, out: {}, in: {}, queue: [] };
+      this.nodes.push(B);
       nodes.push(B);
       const road = { name: R.name, pts: sp, fwd: [], bwd: [], houses: !!R.houses };
       for (let k = 0; k < nseg; k++) {
@@ -712,16 +830,17 @@ export class City {
     this.junctions = [];
     for (const e of this.edges) { e.rev = Object.values(this.nodes[e.b].out).find((o) => o.b === e.a) || null; e.walk = e.hw + e.sw; }
     for (const n of this.nodes) {
-      if (n.pass) continue;
       const outs = Object.values(n.out).map((e) => ({ e, a: Math.atan2(e.sdz, e.sdx) })).sort((p, q) => p.a - q.a);
       const m = outs.length;
       n.sorted = outs.map((o) => o.e);
-      n.bend = m === 2; n.bulb = m === 1;
       n.corners = outs.map((o, k) => {
         let phi = m === 1 ? Math.PI * 2 : outs[(k + 1) % m].a - o.a;
         if (phi <= 0) phi += Math.PI * 2;
         return this.cornerGeom(o.e, outs[(k + 1) % m].e, phi, 0, 0);
       });
+      // pass-through nodes (hill road joints, the freeway's ramp noses) have no junction box
+      if (n.pass) continue;
+      n.bend = m === 2; n.bulb = m === 1;
       n.r = 0;
       outs.forEach((o, k) => {
         const e = o.e, cl = n.corners[(k - 1 + m) % m], cr = n.corners[k];
@@ -739,7 +858,7 @@ export class City {
     for (const e of this.edges) {
       const A = this.nodes[e.a], B = this.nodes[e.b];
       if (A.pass) e.ra = 0;
-      e.rb = B.pass ? 0 : e.rev.ra;
+      e.rb = B.pass || !e.rev ? 0 : e.rev.ra;
     }
   }
   // corner between street e (its right kerb) and the next street f anticlockwise (its left kerb), with
@@ -756,6 +875,9 @@ export class City {
   // the back of the sidewalk instead)
   cornerPath(n, k, walk = false) {
     const m = n.sorted.length, e = n.sorted[k], f = n.sorted[(k + 1) % m];
+    // (a ramp leaving the freeway at a few degrees: the kerb lines only meet far away, so the block
+    // outline just takes a point a little way down the street)
+    if (n.pass) { const cg = n.corners[k]; return [this.edgePoint(e, Math.min(cg.ue, 20), cg.We + (walk ? e.sw : 0))]; }
     if (m === 1) { // all the way round the cul-de-sac
       const Rb = BULB_R + (walk ? e.sw : 0), W = e.hw + (walk ? e.sw : 0), ua = Math.sqrt(Math.max(1, Rb * Rb - W * W));
       const th = Math.atan2(e.sdz, e.sdx), b = Math.atan2(W, ua), out = [];
@@ -780,9 +902,10 @@ export class City {
     for (const e of this.edges) {
       const nb = this.nodes[e.b];
       if (nb.bulb) { this.moveEdge[e.id] = { U: e.rev }; this.laneMoves[e.id] = e.lanes === 2 ? ['U', 'U'] : ['U']; continue; }
+      if (e.noEntry) { this.moveEdge[e.id] = {}; this.laneMoves[e.id] = ['']; continue; }
       const all = [];
       for (const o of Object.values(nb.out)) {
-        if (o.b === e.a) continue;
+        if (o.b === e.a || o.noEntry) continue;
         const dot = e.dx * o.sdx + e.dz * o.sdz, cross = e.dx * o.sdz - e.dz * o.sdx, a = Math.atan2(cross, dot);
         if (Math.abs(a) < 2.5) all.push({ o, a });
       }
@@ -796,6 +919,18 @@ export class City {
       if (rt.length === 1) mv[rt[0].a > 1.05 ? 'R' : 'r'] = rt[0].o; else if (rt.length > 1) { mv.R = rt[0].o; mv.r = rt[rt.length - 1].o; }
       this.moveEdge[e.id] = mv;
       if (e.lanes === 1) { this.laneMoves[e.id] = [Object.keys(mv).join('') || 'S']; continue; }
+      if (e.lanes >= 3) {
+        // the freeway: turns (exits) from the outside lanes only, straight on from every lane
+        const l = [];
+        for (let k = 0; k < e.lanes; k++) {
+          let s = '';
+          if (k === 0) { if (mv.L) s += 'L'; if (mv.l) s += 'l'; }
+          if (mv.S) s += 'S';
+          if (k === e.lanes - 1) { if (mv.R) s += 'R'; if (mv.r) s += 'r'; }
+          l.push(s || Object.keys(mv).join('') || 'S');
+        }
+        this.laneMoves[e.id] = l; continue;
+      }
       const L = !!(mv.L || mv.l), Sx = !!mv.S, R = !!(mv.R || mv.r), r = this.rand(), big = Object.keys(nb.out).length >= 4;
       let l0 = '', l1 = '';
       if (mv.L) l0 += 'L';
@@ -816,6 +951,16 @@ export class City {
     for (const [m, o] of Object.entries(this.moveEdge[e.id])) if (o === next) return m;
     return 'S';
   }
+  // which lane of `next` a car in lane l of e ends up in after `move`: the outside lane for a turn,
+  // otherwise the lane that lines up with where it is (a ramp runs into the freeway's right lane)
+  laneAfter(e, l, next, move) {
+    if (move === 'R' || move === 'r') return next.lanes - 1;
+    if (move === 'L' || move === 'l' || move === 'U') return 0;
+    const w = this.laneW(e, l, e.len);
+    let best = Math.min(l, next.lanes - 1), bd = Infinity;
+    for (let k = 0; k < next.lanes; k++) { const d = Math.abs(this.laneW(next, k, 0) - w); if (d < bd - 0.05) { bd = d; best = k; } }
+    return best;
+  }
   // Who stops where. Arterial crossings get signals; a side street meeting an arterial (or the stem of a
   // residential T) gets a stop sign while the through road keeps going; residential crossroads are
   // all-way stops; bends and cul-de-sacs are uncontrolled. Opposing approaches share signal phases.
@@ -824,7 +969,7 @@ export class City {
     for (const n of this.nodes) {
       n.light = false;
       if (n.pass || n.bend || n.bulb) continue;
-      const ins = Object.values(n.in), major = (e) => e.cls !== 'loc';
+      const ins = Object.values(n.in).filter((e) => !e.noEntry), major = (e) => e.cls !== 'loc';
       const nMaj = ins.filter(major).length;
       // opposing approach pairs (straight through each other)
       const pairs = [];
@@ -848,8 +993,10 @@ export class City {
         ins.forEach((e, q) => { e.ctl = q === i || q === j ? 'none' : 'stop2'; });
       }
     }
+    // an on-ramp gives way to the freeway traffic as it joins (no stopping unless it has to)
+    for (const e of this.edges) if (e.kind === 'ramp' && !e.noEntry && this.nodes[e.b].fwy) e.ctl = 'yield';
     // stop line / crosswalk zones (4.2 m) only where traffic has to stop
-    for (const e of this.edges) e.zb = e.ctl === 'none' ? 0 : 3.9;
+    for (const e of this.edges) e.zb = e.ctl === 'none' || e.ctl === 'yield' ? 0 : 3.9;
     for (const e of this.edges) {
       const A = this.nodes[e.a], B = this.nodes[e.b];
       e.sa = A.pass ? STOP : e.ra + (e.rev ? e.rev.zb : 0);
@@ -972,7 +1119,8 @@ export class City {
     faces.forEach((f, i) => { if (Math.abs(f.area) > Math.abs(faces[oi].area)) oi = i; });
     const outer = faces[oi], sg = Math.sign(outer.area);
     this.ring = outer.cyc.map((g) => [g.ax, g.az]);
-    this.faces = faces.filter((f) => f !== outer && Math.sign(f.area) !== sg);
+    // (the strip between the freeway's carriageways and the slivers beside its ramps are not blocks)
+    this.faces = faces.filter((f) => f !== outer && Math.sign(f.area) !== sg && !f.cyc.every((g) => g.kind === 'fwy' || g.kind === 'ramp'));
     for (const f of this.faces) {
       for (const g of f.cyc) g.face = f;
       const ns = f.cyc.map((g) => this.nodes[g.a]);
@@ -983,14 +1131,14 @@ export class City {
       f.slabPieces = cs.pieces; f.innerPieces = ci.pieces; f.cut = cs.cut;
       f.area = Math.abs(polyArea(inner));
     }
-    // the city limits (terrain stays flat inside): the outer ring road pushed out by 26 m
-    const P = this.ring, n = P.length, out = [];
-    for (let i = 0; i < n; i++) {
-      const a = P[(i - 1 + n) % n], b = P[(i + 1) % n];
-      let tx = b[0] - a[0], tz = b[1] - a[1]; const l = Math.hypot(tx, tz); tx /= l; tz /= l;
-      let nx = tz, nz = -tx;
-      if (pointInPoly(P[i][0] + nx * 2, P[i][1] + nz * 2, P)) { nx = -nx; nz = -nz; }
-      out.push({ x: P[i][0] + nx * 26, z: P[i][1] + nz * 26 });
+    // the city limits (terrain stays flat inside): just beyond the beltway, bulging out round each
+    // interchange for the ramp terminals, the theme park and the hill-road starts
+    const out = [];
+    for (let k = 0; k < 720; k++) {
+      const a = (k / 720) * Math.PI * 2;
+      let r = this.fwyR(a) + 60;
+      for (const ic of this.interchanges) { const d = Math.abs(Math.atan2(Math.sin(a - ic.a), Math.cos(a - ic.a))) * this.fwyR(ic.a); r += (EXT_R + 70) * (1 - smooth((d - 340) / 160)); }
+      out.push({ x: Math.cos(a) * r, z: Math.sin(a) * r });
     }
     this.cityPoly = out;
   }
@@ -1118,8 +1266,22 @@ export class City {
     }
     return best;
   }
-  groundHeight(x, z) {
+  // the street under (x,z), with its height: the freeway rides over the spokes, so where two streets
+  // overlap the one nearest the current height wins
+  roadAt(x, z, yHint = 0) {
+    let best = null;
+    for (const e of this.edgesNear(x, z)) {
+      const { u, w } = this.edgeLocal(e, x, z);
+      if (u < -1 || u > e.len + 1 || Math.abs(w) > e.hw) continue;
+      const y = e.level ? this.fwyY(x, z) : 0;
+      if (!best || Math.abs(y - yHint) < Math.abs(best.y - yHint)) best = { e, u, w, y };
+    }
+    return best;
+  }
+  groundHeight(x, z, yHint = 0) {
     if (this.terrain.cityDist(x, z) > -6) return Math.max(0, this.terrain.heightAt(x, z));
+    const r = this.roadAt(x, z, yHint);
+    if (r) return r.y;
     if (this.onRoad(x, z, 0)) return 0;
     if (this.riverAbs(x, z) < RIVER_HALF) return -1.6;
     return pointInPoly(x, z, this.ring) ? 0.15 : 0;
@@ -1129,6 +1291,7 @@ export class City {
     const fx = Math.cos(h), fz = Math.sin(h);
     let best = null, bestScore = 1e9;
     for (const e of this.edgesNear(x, z)) {
+      if (e.noEntry) continue;
       const { u, w } = this.edgeLocal(e, x, z);
       if (u < -8 || u > e.len + 8 || w < -1.5 || w > (maxW ?? e.hw)) continue;
       const [tx, tz] = this.edgeTangent(e, Math.min(e.len, Math.max(0, u)));
@@ -1144,15 +1307,15 @@ export class City {
   planBlocks() {
     for (const f of this.faces) {
       const r = Math.hypot(f.cx, f.cz), th = Math.atan2(f.cz, f.cx), rr = r * (1 + 0.16 * Math.sin(3 * th + 1.3));
-      f.district = rr < 340 ? 'downtown' : rr < 610 ? 'midtown' : 'suburb';
+      f.district = rr < 580 ? 'downtown' : rr < 1060 ? 'midtown' : 'suburb';
       f.park = null; f.poi = null;
     }
     this.blocks = this.faces;
-    // parks: Central Park where Broadway crosses the river, two neighbourhood parks
+    // parks: Central Park where Broadway crosses the river, neighbourhood parks
     const bwBridge = this.bridges.find((b) => b.e.axis === 'd'), cpAt = bwBridge ? this.edgePoint(bwBridge.e, bwBridge.uc, 0) : { x: 0, z: 0 };
     const byDist = (x, z) => this.faces.slice().sort((a, b) => Math.hypot(a.cx - x, a.cz - z) - Math.hypot(b.cx - x, b.cz - z));
-    byDist(cpAt.x, cpAt.z).slice(0, 4).forEach((f, k) => { if (k === 0 || Math.hypot(f.cx - cpAt.x, f.cz - cpAt.z) < 150) f.park = 'Central Park'; });
-    for (const [name, x, z] of [['Riverside Park', -600, 560], ['Lakeview Park', 560, -640]]) {
+    byDist(cpAt.x, cpAt.z).slice(0, 4).forEach((f, k) => { if (k === 0 || Math.hypot(f.cx - cpAt.x, f.cz - cpAt.z) < 220) f.park = 'Central Park'; });
+    for (const [name, x, z] of [['Riverside Park', -1050, 980], ['Lakeview Park', 980, -1120], ['Meadowbrook Park', -1500, -700], ['Hilltop Commons', 1450, 900]]) {
       const f = byDist(x, z).find((q) => !q.park && !q.cut);
       if (f) f.park = name;
     }
@@ -1188,6 +1351,7 @@ export class City {
       this.lots.push(lot);
     }
     this.planStores(inInner);
+    this.planAttractions();
     // Central Park: pull over at the kerb on its longest street without a bridge
     let cp = null;
     for (const f of this.faces) if (f.park === 'Central Park') for (const g of f.cyc) if (g.axis !== 'd' && !g.bridge && !this.nodes[g.b].bulb && (!cp || g.len - g.sa - g.sb > cp.len - cp.sa - cp.sb)) cp = g;
@@ -1272,27 +1436,71 @@ export class City {
       lotC.push(c.c);
     });
   }
-  makeBigLot(e, u0, D) {
+  // A big lot: L metres of frontage, `pairs` double rows of stalls on as many aisles (18 m apart),
+  // cross aisles at both ends, a fire lane along the front of whatever stands behind, two driveways.
+  makeBigLot(e, u0, D, { L = 96, pairs = 2 } = {}) {
     const lp = (u, w) => this.edgePoint(e, u, w);
-    const W0 = e.walk, L = 96, uL = u0 + 3.5, uR = u0 + L - 3.5;
-    const a1 = W0 + 10, a2 = W0 + 28;
+    const W0 = e.walk, uL = u0 + 3.5, uR = u0 + L - 3.5, nStall = Math.floor((L - 14) / 2.9);
+    const aislesW = [];
+    for (let k = 0; k < pairs; k++) aislesW.push(W0 + 10 + 18 * k);
     // rows: [mouth w, direction the stall runs from its mouth, aisle centre]
-    const rows = [[W0 + 6.5, -1, a1], [W0 + 13.5, 1, a1], [W0 + 24.5, -1, a2], [W0 + 31.5, 1, a2]];
+    const rows = [];
+    aislesW.forEach((aw) => { rows.push([aw - 3.5, -1, aw], [aw + 3.5, 1, aw]); });
     const stalls = [];
     rows.forEach(([wm, n, aw], row) => {
-      for (let k = 0; k < 28; k++) {
+      for (let k = 0; k < nStall; k++) {
         const u = u0 + 7 + 1.45 + k * 2.9;
         const c = lp(u, wm + n * 2.75), hIn = Math.atan2(e.rz * n, e.rx * n);
         stalls.push({ k: stalls.length, row, u, wm, n, aw, cx: c.x, cz: c.z, hIn, h: hIn, occupied: false, charger: false });
       }
     });
-    // aisles 1 and 2 between the rows, the fire lane along the store front, cross aisles at both ends
-    const a3 = W0 + 40.5;
-    const aisles = {
-      nodes: [[uL, W0], [uL, a1], [uL, a2], [uR, W0], [uR, a1], [uR, a2], [uL, a3], [uR, a3]],
-      links: [[0, 1], [1, 2], [1, 4], [2, 5], [4, 5], [3, 4], [2, 6], [6, 7], [5, 7]],
+    const aF = W0 + 4.5 + 18 * pairs, lotD = 18 * pairs + 8;
+    const nodes = [[uL, W0], [uR, W0]], links = [];
+    aislesW.forEach((aw, k) => {
+      nodes.push([uL, aw], [uR, aw]);
+      const l = 2 + 2 * k, r = l + 1;
+      links.push([l, r]);
+      if (k === 0) links.push([0, l], [1, r]); else links.push([l - 2, l], [r - 2, r]);
+    });
+    const fl = nodes.length; nodes.push([uL, aF], [uR, aF]);
+    links.push([fl - 2, fl], [fl - 1, fl + 1], [fl, fl + 1]);
+    const aisles = { nodes, links };
+    return { big: true, edge: e, u0, L, D, pairs, lotD, du: uL, du2: uR, W0, a1: aislesW[0], a2: aislesW[1] ?? aislesW[0], a3: aF, aislesW, stalls, charger: false, lp, aisles, gates: [0, 1], bounds: [u0, u0 + L, W0, W0 + lotD] };
+  }
+  // The mall (on an interchange spoke inside the beltway) and the theme park (past the interchange,
+  // out beyond the beltway), each with a huge lot in front
+  planAttractions() {
+    this.attractions = [];
+    const icE = this.interchanges.find((c) => c.ix === 'E'), icS = this.interchanges.find((c) => c.ix === 'S');
+    const inInner = (f, p) => !!f && f.innerPieces.some((pc) => pointInPoly(p.x, p.z, pc));
+    const fits = (e, u0, L, D) => { for (let a = 0; a <= 10; a++) for (let b = 0; b <= 6; b++) if (!inInner(e.face, this.edgePoint(e, u0 + (L * a) / 10, e.walk + 1 + ((D - 1) * b) / 6))) return false; return true; };
+    const addPoi = (name, cat, e, lot, extra) => {
+      const entry = this.edgePoint(e, lot.du, 5.4);
+      const poi = { id: this.pois.length, name, cat, kw: 0, block: e.face || null, edge: e, lot, x: entry.x, z: entry.z, address: `${name} Dr`, store: true, ...extra };
+      lot.poi = poi; this.pois.push(poi); this.lots.push(lot); this.attractions.push(poi);
+      if (e.face) (e.face.stores ||= []).push(poi);
+      return poi;
     };
-    return { big: true, edge: e, u0, L, D, du: uL, du2: uR, W0, a1, a2, a3, stalls, charger: false, lp, aisles, gates: [0, 3], bounds: [u0, u0 + L, W0, W0 + 44] };
+    if (icE) {
+      const o = icE.line.o;
+      for (const e of this.edges) {
+        if (e.kind !== 'spokex' || e.noEntry || e.name !== icE.name || e.dx * o[0] + e.dz * o[1] < 0.9 || e.len < 290) continue;
+        if (!Object.values(this.nodes[e.a].in).some((q) => q.kind === 'ring')) continue;
+        const L = 220, D = 62 + 120, u0 = e.sa + 12;
+        const cand = [e, e.rev].find((q) => q.face && fits(q, u0, L, D));
+        if (!cand) continue;
+        addPoi('Grand Central Mall', 'shopping', cand, this.makeBigLot(cand, u0, D, { L, pairs: 3 }), { mall: true });
+        break;
+      }
+    }
+    if (icS) {
+      const o = icS.line.o, nb = icS.nodeB;
+      const e = Object.values(nb.out).find((q) => q.kind === 'spokex' && !q.noEntry && q.dx * o[0] + q.dz * o[1] > 0.9);
+      if (e && e.len > 330) {
+        const L = 300, D = 62 + 220, u0 = e.sa + 10;
+        addPoi('Thunder Ridge Theme Park', 'fun', e, this.makeBigLot(e, u0, D, { L, pairs: 3 }), { park: true });
+      }
+    }
   }
 
   // ---------- geometry ----------
@@ -1308,9 +1516,9 @@ export class City {
     this.asphalt = box; this.roadTex = { mid, end };
     const geo = () => ({ p: [], uv: [], idx: [] });
     const G1 = geo(), G2 = geo(), G3 = geo(), L1 = geo(), L2 = geo();
-    const quad = (g, pts, uvs) => {
+    const quad = (g, pts, uvs, ys = null) => {
       const b = g.p.length / 3;
-      for (let i = 0; i < 4; i++) { g.p.push(pts[i].x, 0, pts[i].z); g.uv.push(uvs[i][0], uvs[i][1]); }
+      for (let i = 0; i < 4; i++) { g.p.push(pts[i].x, ys ? ys[i] : 0, pts[i].z); g.uv.push(uvs[i][0], uvs[i][1]); }
       // ensure upward facing
       const ax = pts[1].x - pts[0].x, az = pts[1].z - pts[0].z, bx = pts[2].x - pts[0].x, bz = pts[2].z - pts[0].z;
       const ny = az * bx - ax * bz;
@@ -1318,7 +1526,7 @@ export class City {
     };
     const boxUV = (pts) => pts.map((p) => [p.x / 8, p.z / 8]);
     for (const e of this.edges) {
-      if (e.curve || e.a > e.b) continue;
+      if (e.curve || e.a > e.b || e.kind === 'fwy' || e.kind === 'ramp') continue;
       const P = (u, w) => this.edgePoint(e, u, w), W = e.hw, loc = e.lanes === 1, gm = loc ? L1 : G1, ge = loc ? L2 : G2, vr = loc ? 16 : 12;
       // at bends the strips run on through the node so neighbouring pieces overlap instead of leaving a seam
       const bA = this.nodes[e.a].bend, bB = this.nodes[e.b].bend;
@@ -1330,8 +1538,8 @@ export class City {
     }
     // junctions: a fan around each node out to the kerb returns
     for (const j of this.junctions) {
-      const c = { x: j.n.x, z: j.n.z }, pts = j.pts;
-      for (let i = 0; i < pts.length; i++) { const tri = [c, pts[i], pts[(i + 1) % pts.length], c]; quad(G3, tri, boxUV(tri)); }
+      const c = { x: j.n.x, z: j.n.z }, pts = j.pts, H = (p) => Math.max(0, this.terrain.heightAt(p.x, p.z)) + 0.07;
+      for (let i = 0; i < pts.length; i++) { const tri = [c, pts[i], pts[(i + 1) % pts.length], c]; quad(G3, tri, boxUV(tri), j.n.hill ? tri.map(H) : null); }
     }
     const mk = (g, tex, rough, lift) => {
       if (!g.p.length) return;
@@ -1350,9 +1558,9 @@ export class City {
     // lane arrows on two-lane approaches to signals
     const arrowItems = {};
     for (const e of this.edges) {
-      if (this.nodes[e.b].pass || e.lanes !== 2 || e.ctl !== 'light') continue;
+      if (this.nodes[e.b].pass || e.lanes < 2 || e.ctl !== 'light' || e.kind === 'fwy') continue;
       const lm = this.laneMoves[e.id], hasS = !!this.moveEdge[e.id].S;
-      for (let l = 0; l < 2; l++) {
+      for (let l = 0; l < e.lanes; l++) {
         const t = lm[l], only = (t === 'L' || t === 'R') && hasS;
         const key = t + (only ? '_ONLY' : '');
         for (const u of [e.len - e.sb - 7, e.len - e.sb - 32]) {
@@ -1369,6 +1577,183 @@ export class City {
       const mat = new THREE.MeshStandardMaterial({ map: TX.arrowTexture(type.toUpperCase(), !!only), transparent: true, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, depthWrite: false });
       this.scene.add(instanced(ageo, mat, items, (it, d) => { d.position.set(it.x, it.y, it.z); d.rotation.set(0, it.yaw, 0); d.scale.set(1.25, 1, 3.3); }, { shadow: false }));
     }
+  }
+
+  // The beltway: carriageway strips (lanes and shoulder, rising over the spoke roads), the ramps'
+  // single lanes peeling off the right lane, a median barrier and outer barriers (solid to cars), and
+  // at each overpass the embankments, a bridge deck and its piers.
+  buildFreewayMeshes() {
+    const acc = () => ({ p: [], uv: [], idx: [] });
+    const FW = acc(), RP = acc(), SK = acc();
+    const Y = (x, z) => this.fwyY(x, z);
+    const strip = (g, e, u0, u1, wf0, wf1, uvf, lift) => {
+      const steps = Math.max(1, Math.ceil((u1 - u0) / 4)), base = g.p.length / 3;
+      for (let k = 0; k <= steps; k++) {
+        const u = u0 + ((u1 - u0) * k) / steps;
+        for (const w of [wf0(u), wf1(u)]) { const p = this.edgePoint(e, u, w); g.p.push(p.x, Y(p.x, p.z) + lift, p.z); g.uv.push(...uvf(u, w)); }
+      }
+      for (let k = 0; k < steps; k++) { const a = base + k * 2; g.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    };
+    const bars = [];
+    const bar = (e, u, len, w) => {
+      const p = this.edgePoint(e, u, w), q0 = this.edgePoint(e, u - len / 2, w), q1 = this.edgePoint(e, u + len / 2, w);
+      const y0 = Y(q0.x, q0.z), y1 = Y(q1.x, q1.z), yaw = Math.atan2(-e.dz, e.dx);
+      bars.push({ x: p.x, z: p.z, y: (y0 + y1) / 2, yaw, pitch: Math.atan2(y1 - y0, len), len });
+      this.addOBB(p.x, p.z, len / 2, 0.25, yaw, 1.0, false);
+    };
+    for (const e of this.edges) {
+      if (e.noEntry) continue;
+      if (e.kind === 'fwy') {
+        strip(FW, e, -0.3, e.len + 0.3, () => -2, () => 13.6, (u, w) => [(w + 2) / 15.6, u / 12], 0.08);
+        const inner = Math.hypot(e.ax, e.az) < this.fwyR(Math.atan2(e.az, e.ax));
+        const A = this.nodes[e.a], B = this.nodes[e.b], skipA = A.fwy ? 125 : 0, skipB = B.fwy ? 125 : 0;
+        for (let u = 0; u < e.len; u += 8) {
+          const len = Math.min(8, e.len - u), um = u + len / 2;
+          if (inner) bar(e, um, len, -2);
+          if (um > skipA && um < e.len - skipB) bar(e, um, len, 13.9);
+        }
+      } else if (e.kind === 'ramp') {
+        strip(RP, e, 0, e.len, (u) => this.laneW(e, 0, u) - 2.4, (u) => this.laneW(e, 0, u) + 2.4, (u, w) => [(w - this.laneW(e, 0, u) + 2.4) / 4.8, u / 12], 0.05);
+      }
+    }
+    // the overpasses: embankment skirts up to the bridge, a deck over the spoke, piers and abutments
+    const decks = [], piers = [], abut = [];
+    for (const ic of this.interchanges) {
+      const rc = this.fwyR(ic.a), t = [-Math.sin(ic.a), Math.cos(ic.a)], o = [Math.cos(ic.a), Math.sin(ic.a)];
+      const base = SK.p.length / 3; let rows = 0;
+      for (let d = -150; d <= 150; d += 4) {
+        const a = ic.a + d / rc, r = this.fwyR(a), c = [Math.cos(a) * r, Math.sin(a) * r], y = Y(c[0], c[1]);
+        if (Math.abs(d) <= 26 || y < 0.25) continue;
+        const n = [Math.cos(a), Math.sin(a)];
+        for (const s of [-1, 1]) {
+          const W = 17.6, wB = W + 1.4 * y;
+          SK.p.push(c[0] + n[0] * s * W, y, c[1] + n[1] * s * W, c[0] + n[0] * s * wB, 0, c[1] + n[1] * s * wB);
+          SK.uv.push(s * W / 6, d / 6, s * wB / 6, d / 6);
+        }
+        if (rows > 0 && Math.abs(d - 4) > 26) for (const q of [0, 2]) { const a0 = base + (rows - 1) * 4 + q, b0 = base + rows * 4 + q; SK.idx.push(a0, b0, a0 + 1, a0 + 1, b0, b0 + 1, a0, a0 + 1, b0, a0 + 1, b0 + 1, b0); }
+        rows++;
+      }
+      const yaw = Math.atan2(-t[1], t[0]);
+      decks.push({ x: ic.x, z: ic.z, y: OVERPASS_H - 0.7, yaw });
+      for (const s of [-1, 1]) for (const q of [-1, 1]) { const p = [ic.x + t[0] * s * 10.5 + o[0] * q * 11, ic.z + t[1] * s * 10.5 + o[1] * q * 11]; piers.push({ x: p[0], z: p[1] }); this.addCircle(p[0], p[1], 1.1); }
+      for (const s of [-1, 1]) { const p = [ic.x + t[0] * s * 26.5, ic.z + t[1] * s * 26.5]; abut.push({ x: p[0], z: p[1], yaw }); this.addOBB(p[0], p[1], 0.6, 17.6, yaw, OVERPASS_H, false); }
+    }
+    const mk = (g, mat) => {
+      if (!g.p.length) return;
+      const bg = new THREE.BufferGeometry();
+      bg.setAttribute('position', new THREE.Float32BufferAttribute(g.p, 3));
+      bg.setAttribute('uv', new THREE.Float32BufferAttribute(g.uv, 2));
+      bg.setIndex(g.idx); bg.computeVertexNormals();
+      const nrm = bg.attributes.normal; let up = 0;
+      for (let i = 0; i < nrm.count; i += 7) up += nrm.getY(i);
+      if (up < 0) { const ix = bg.index.array; for (let i = 0; i < ix.length; i += 3) { const t = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = t; } bg.computeVertexNormals(); }
+      const m = new THREE.Mesh(bg, mat); m.receiveShadow = true; this.scene.add(m);
+    };
+    const ft = TX.freewayTextures(), rt = TX.rampTextures();
+    mk(FW, new THREE.MeshStandardMaterial({ map: ft.map, normalMap: ft.normalMap, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.92 }));
+    mk(RP, new THREE.MeshStandardMaterial({ map: rt.map, normalMap: rt.normalMap, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.92 }));
+    mk(SK, new THREE.MeshStandardMaterial({ map: this.grassTex.map, normalMap: this.grassTex.normalMap, roughness: 1, side: THREE.DoubleSide }));
+    const concrete = new THREE.MeshStandardMaterial({ color: 0xb4b0a8, roughness: 0.85 });
+    const barGeo = new THREE.BoxGeometry(1, 0.9, 0.42); barGeo.translate(0, 0.45, 0);
+    this.scene.add(instanced(barGeo, concrete, bars, (b, d) => { d.position.set(b.x, b.y, b.z); d.rotation.set(0, b.yaw, b.pitch); d.scale.set(b.len + 0.05, 1, 1); }, { shadow: false, tile: 800 }));
+    const deckGeo = new THREE.BoxGeometry(54, 1.4, 36.4);
+    this.scene.add(instanced(deckGeo, concrete, decks, (b, d) => { d.position.set(b.x, b.y, b.z); d.rotation.set(0, b.yaw, 0); d.scale.set(1, 1, 1); }));
+    const pierGeo = new THREE.CylinderGeometry(0.9, 1.0, OVERPASS_H - 1.4, 12); pierGeo.translate(0, (OVERPASS_H - 1.4) / 2, 0);
+    this.scene.add(instanced(pierGeo, concrete, piers, (b, d) => { d.position.set(b.x, 0, b.z); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); }));
+    const abutGeo = new THREE.BoxGeometry(1.2, OVERPASS_H - 0.6, 36.4); abutGeo.translate(0, (OVERPASS_H - 0.6) / 2, 0);
+    this.scene.add(instanced(abutGeo, concrete, abut, (b, d) => { d.position.set(b.x, 0, b.z); d.rotation.set(0, b.yaw, 0); d.scale.set(1, 1, 1); }));
+  }
+
+  // The theme park behind its lot: a fence round the grounds, paths, a big roller coaster on a looping
+  // track with supports and a running train, a Ferris wheel, a carousel, food stands and trees.
+  buildThemePark(trees) {
+    const F = this.parkFrame; if (!F) return;
+    const { e, u0, u1, w0, w1 } = F, lp = (u, w) => this.edgePoint(e, u, w);
+    const uc = (u0 + u1) / 2, wc = (w0 + w1) / 2, yaw = Math.atan2(-e.dz, e.dx);
+    const rides = new THREE.Group(); this.scene.add(rides);
+    const at = (u, w, y = 0) => { const p = lp(u, w); return new THREE.Vector3(p.x, y, p.z); };
+    // fence
+    const posts = [], rails = [];
+    const ring = [[u0, w0], [u1, w0], [u1, w1], [u0, w1]];
+    for (let k = 0; k < 4; k++) {
+      const a = ring[k], b = ring[(k + 1) % 4], n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4);
+      for (let i = 0; i <= n; i++) {
+        const u = a[0] + ((b[0] - a[0]) * i) / n, w = a[1] + ((b[1] - a[1]) * i) / n;
+        if (k === 0 && Math.abs(u - uc) < 12) continue; // the entrance gap
+        const p = lp(u, w); posts.push({ x: p.x, z: p.z }); this.addCircle(p.x, p.z, 0.25);
+        if (i) { const q = lp(a[0] + ((b[0] - a[0]) * (i - 1)) / n, a[1] + ((b[1] - a[1]) * (i - 1)) / n); if (!(k === 0 && Math.abs(a[0] + ((b[0] - a[0]) * (i - 1)) / n - uc) < 12)) rails.push({ a: q, b: p }); }
+      }
+    }
+    const iron = new THREE.MeshStandardMaterial({ color: 0x24262a, roughness: 0.5, metalness: 0.6 });
+    const postGeo = new THREE.BoxGeometry(0.1, 2.4, 0.1); postGeo.translate(0, 1.2, 0);
+    rides.add(instanced(postGeo, iron, posts, (p, d) => { d.position.set(p.x, 0, p.z); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); }, { shadow: false }));
+    const railGeo = new THREE.BoxGeometry(0.05, 0.08, 1); railGeo.translate(0, 0, 0.5);
+    for (const y of [2.2, 1.2]) rides.add(instanced(railGeo, iron, rails, (r, d) => { d.position.set(r.a.x, y, r.a.z); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.lookAt(r.b.x, y, r.b.z); d.scale.set(1, 1, Math.hypot(r.b.x - r.a.x, r.b.z - r.a.z)); }, { shadow: false }));
+    // entrance arch and sign
+    const arch = new THREE.Mesh(new THREE.BoxGeometry(26, 2.2, 1.2), new THREE.MeshStandardMaterial({ color: 0xc8302a, roughness: 0.6 }));
+    arch.position.copy(at(uc, w0, 6.2)); arch.rotation.y = yaw; rides.add(arch);
+    for (const s of [-1, 1]) { const col = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 6, 10), new THREE.MeshStandardMaterial({ color: 0xe8e2d0 })); col.position.copy(at(uc + s * 12.5, w0, 3)); rides.add(col); this.addCircle(col.position.x, col.position.z, 0.7); }
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(22, 1.8), new THREE.MeshStandardMaterial({ map: TX.signTexture('THUNDER RIDGE', 'theme park', '#c8302a', '#fff4d6'), emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.5 }));
+    sign.material.emissiveMap = sign.material.map; sign.position.copy(at(uc, w0 - 0.65, 6.2)); sign.rotation.y = yaw + Math.PI; rides.add(sign); (this.signMats ||= []).push(sign.material);
+    // paths: a main avenue from the gate and a loop
+    const pathMat = new THREE.MeshStandardMaterial({ color: 0xc9b99a, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    const path = (ua, wa, ub, wb, wid) => { const a = at(ua, wa, 0.03), b = at(ub, wb, 0.03), m = new THREE.Mesh(new THREE.BoxGeometry(wid, 0.02, a.distanceTo(b)), pathMat); m.position.lerpVectors(a, b, 0.5); m.lookAt(b); rides.add(m); };
+    path(uc, w0, uc, w1 - 20, 10); path(u0 + 30, wc, u1 - 30, wc, 8);
+    // the roller coaster: a looping track with lift hill, drop, camelbacks and a helix
+    const K = [], R0 = rng(99);
+    const span = (u1 - u0) * 0.42, dep = (w1 - w0) * 0.36;
+    const prof = [[-1, -0.6, 2], [-0.6, -0.95, 4], [-0.1, -1, 36], [0.25, -0.9, 30], [0.5, -0.5, 6], [0.9, -0.1, 24], [1, 0.5, 8], [0.7, 0.95, 20], [0.3, 1, 7], [-0.1, 0.8, 18], [-0.45, 0.95, 5], [-0.8, 0.7, 14], [-1, 0.2, 3]];
+    for (const [a, b, h] of prof) K.push(at(uc + a * span, wc + 14 + b * dep, h + 1.5));
+    const curve = new THREE.CatmullRomCurve3(K, true, 'centripetal', 0.5);
+    const trackMat = new THREE.MeshStandardMaterial({ color: 0xd8482c, roughness: 0.45, metalness: 0.5 });
+    const n = 480, pts = curve.getSpacedPoints(n), fr = curve.computeFrenetFrames(n, true);
+    const railG = [];
+    for (const s of [-0.7, 0.7]) {
+      const c2 = new THREE.CatmullRomCurve3(pts.map((p, i) => p.clone().addScaledVector(fr.binormals[i], s)), true);
+      railG.push(new THREE.TubeGeometry(c2, 360, 0.09, 6, true));
+    }
+    railG.push(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map((p, i) => p.clone().addScaledVector(fr.normals[i], -0.45)), true), 360, 0.16, 6, true));
+    rides.add(new THREE.Mesh(mergeGeometries(railG.map((g) => g.index ? g.toNonIndexed() : g)), trackMat));
+    // ties and supports
+    const ties = [], sup = [];
+    for (let i = 0; i < n; i += 3) { const p = pts[i]; ties.push({ x: p.x, y: p.y - 0.45, z: p.z, q: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(fr.binormals[i], fr.normals[i], fr.tangents[i])) }); }
+    for (let i = 0; i < n; i += 12) { const p = pts[i]; if (p.y > 3) { sup.push({ x: p.x, z: p.z, h: p.y - 0.6 }); this.addCircle(p.x, p.z, 0.35); } }
+    const tieGeo = new THREE.BoxGeometry(1.9, 0.12, 0.3);
+    rides.add(instanced(tieGeo, trackMat, ties, (t, d) => { d.position.set(t.x, t.y, t.z); d.quaternion.copy(t.q); d.scale.set(1, 1, 1); }, { shadow: false }));
+    const supGeo = new THREE.CylinderGeometry(0.22, 0.28, 1, 8); supGeo.translate(0, 0.5, 0);
+    rides.add(instanced(supGeo, new THREE.MeshStandardMaterial({ color: 0xe6e6e0, roughness: 0.6, metalness: 0.3 }), sup, (s, d) => { d.position.set(s.x, 0, s.z); d.rotation.set(0, 0, 0); d.scale.set(1, s.h, 1); }));
+    // the train
+    const train = new THREE.Group(); rides.add(train);
+    const carGeo = new RoundedBoxGeometry(1.5, 0.9, 2.2, 2, 0.2); carGeo.translate(0, 0.55, 0);
+    const cars = [];
+    for (let k = 0; k < 5; k++) { const m = new THREE.Mesh(carGeo, new THREE.MeshStandardMaterial({ color: k ? 0x2a4ea8 : 0xf2c21c, roughness: 0.4, metalness: 0.3 })); rides.add(m); cars.push(m); }
+    this.coaster = { curve, cars, s: 0, v: 4, len: curve.getLength() };
+    // Ferris wheel
+    const fw = new THREE.Group(); fw.position.copy(at(u1 - 34, w1 - 40, 0)); fw.rotation.y = yaw; rides.add(fw);
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0xf4f1ea, roughness: 0.5, metalness: 0.4 });
+    for (const s of [-1, 1]) { const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 26, 8), wheelMat); leg.position.set(0, 12.5, s * 2.2); leg.rotation.x = s * 0.18; fw.add(leg); }
+    const hub = new THREE.Group(); hub.position.y = 24; fw.add(hub);
+    hub.add(new THREE.Mesh(new THREE.TorusGeometry(20, 0.3, 8, 48), wheelMat));
+    hub.add(new THREE.Mesh(new THREE.TorusGeometry(20, 0.3, 8, 48), wheelMat).translateZ(2));
+    const spokeGeo = new THREE.CylinderGeometry(0.12, 0.12, 40, 6);
+    for (let k = 0; k < 12; k++) { const sp = new THREE.Mesh(spokeGeo, wheelMat); sp.rotation.z = (k / 12) * Math.PI; sp.position.z = k % 2 ? 2 : 0; hub.add(sp); }
+    const gondolaGeo = new RoundedBoxGeometry(2.2, 2.0, 2.0, 2, 0.4), gondolas = [];
+    for (let k = 0; k < 16; k++) { const g = new THREE.Mesh(gondolaGeo, new THREE.MeshStandardMaterial({ color: k % 2 ? 0xe0433c : 0x2f7fd6, roughness: 0.5 })); hub.add(g); gondolas.push(g); }
+    this.ferris = { hub, gondolas, a: 0 };
+    this.addCircle(fw.position.x, fw.position.z, 3.5);
+    // carousel
+    const car = new THREE.Group(); car.position.copy(at(u0 + 34, w1 - 36, 0)); rides.add(car);
+    car.add(new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 0.6, 24), new THREE.MeshStandardMaterial({ color: 0xd9c9a6 })).translateY(0.3));
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(8.2, 3.2, 24), new THREE.MeshStandardMaterial({ color: 0xd94a3a, roughness: 0.6 })); roof.position.y = 6.3; car.add(roof);
+    car.add(new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 5.5, 12), new THREE.MeshStandardMaterial({ color: 0xf0e8d0 })).translateY(3.3));
+    const spin = new THREE.Group(); spin.position.y = 0.6; car.add(spin);
+    const horseGeo = new THREE.BoxGeometry(0.5, 0.9, 1.4), poleGeo = new THREE.CylinderGeometry(0.04, 0.04, 4.6, 6);
+    for (let k = 0; k < 10; k++) { const a = (k / 10) * Math.PI * 2, h = new THREE.Mesh(horseGeo, new THREE.MeshStandardMaterial({ color: [0xffffff, 0x3a3a3a, 0xa0522d, 0xf5deb3][k % 4] })); h.position.set(Math.cos(a) * 5.2, 1.1, Math.sin(a) * 5.2); h.rotation.y = -a; spin.add(h); const p = new THREE.Mesh(poleGeo, wheelMat); p.position.set(Math.cos(a) * 5.2, 2.6, Math.sin(a) * 5.2); spin.add(p); }
+    this.carousel = spin; this.addCircle(car.position.x, car.position.z, 7.5);
+    // food stands and trees
+    const standGeo = new THREE.BoxGeometry(4, 2.8, 3), standMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }), awn = new THREE.MeshStandardMaterial({ color: 0xd9433a });
+    for (let k = 0; k < 6; k++) { const u = uc - 28 + k * 11, p = at(u, w0 + 26, 1.4), m = new THREE.Mesh(standGeo, k % 2 ? standMat : new THREE.MeshStandardMaterial({ color: 0x4a7fd3, roughness: 0.7 })); m.position.copy(p); m.rotation.y = yaw; m.castShadow = true; rides.add(m); const a = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.15, 1.6), awn); a.position.copy(at(u, w0 + 24, 2.7)); a.rotation.y = yaw; rides.add(a); this.addOBB(p.x, p.z, 2, 1.5, yaw, 2.8); }
+    for (let k = 0; k < 40; k++) { const u = u0 + 6 + R0() * (u1 - u0 - 12), w = w0 + 8 + R0() * (w1 - w0 - 16); const p = lp(u, w); if (Math.abs(u - uc) < 7 || Math.abs(w - wc) < 6) continue; trees.push({ x: p.x, z: p.z, y: 0.15, s: 0.9 + R0() * 0.4, type: R0() < 0.3 ? 1 : 0, c: R0() }); }
   }
 
   // River: animated water surface, bridge decks (with sidewalks, parapets, piers), quay railings.
@@ -1563,7 +1948,7 @@ export class City {
     };
     const towerHeight = (cx, cz, dist) => {
       const r = Math.hypot(cx, cz);
-      if (dist === 'downtown') return 18 + 200 * Math.exp(-((r / 300) ** 2)) * (0.3 + 0.7 * R()) + R() * 18;
+      if (dist === 'downtown') return 18 + 230 * Math.exp(-((r / 520) ** 2)) * (0.3 + 0.7 * R()) + R() * 18;
       return 10 + R() * 24;
     };
     const addTree = (x, z, s = 1, type = R() < 0.25 ? 1 : 0) => { trees.push({ x, z, y: 0.15, s: s * (0.8 + R() * 0.5), type, c: R() }); this.addCircle(x, z, 0.35); };
@@ -1590,8 +1975,42 @@ export class City {
     const slabGeos = [];
     const shapeOf = (poly) => new THREE.Shape(poly.map(([x, z]) => new THREE.Vector2(x, -z)));
     const yawAlong = (g) => Math.atan2(-g.dz, g.dx); // local x along the street, local z into the block
+    // a big lot in front of a store, the mall or the theme park
+    const bigLot = (poi, ctx) => {
+      const lot = poi.lot, e = poi.edge, ye = yawAlong(e), W0 = lot.W0, u0 = lot.u0, L = lot.L, LD = lot.lotD;
+      const rectO = (a0, a1, b0, b1) => { const p = this.edgePoint(e, (a0 + a1) / 2, (b0 + b1) / 2); return mkO(p.x, p.z, (a1 - a0) / 2, (b1 - b0) / 2, ye); };
+      const lr = rectO(u0, u0 + L, W0, W0 + LD);
+      lotPlanes.push({ x: lr.cx, z: lr.cz, w: L, d: LD, yaw: ye });
+      for (const ug of [lot.du, lot.du2]) { const ap = rectO(ug - 3.6, ug + 3.6, CURB, W0); lotPlanes.push({ x: ap.cx, z: ap.cz, w: 7.2, d: W0 - CURB, yaw: ye }); }
+      const ww = rectO(u0 + 6, u0 + L - 6, W0 + LD, W0 + LD + 4);
+      driveways.push({ x: ww.cx, z: ww.cz, w: L - 12, d: 4, yaw: ye });
+      // the fire lane's kerb line in front of the walkway
+      { const a = lot.lp(u0 + 7, W0 + LD - 0.1), b = lot.lp(u0 + L - 7, W0 + LD - 0.1); stallLines.push({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, yaw: Math.atan2(e.dx, e.dz), len: L - 14 }); }
+      if (ctx) { ctx.placed.push(rectO(u0 - 2, u0 + L + 2, W0 - 1, W0 + lot.D + 1)); ctx.block(e, u0 - 5, u0 + L + 5); }
+      poi.lotPoly = [lot.lp(u0, W0), lot.lp(u0 + L, W0), lot.lp(u0 + L, W0 + LD), lot.lp(u0, W0 + LD)];
+      const lineYaw = Math.atan2(-e.rx, -e.rz);
+      for (const st of lot.stalls) {
+        for (const du of [-1.45, 1.45]) {
+          const a = lot.lp(st.u + du, st.wm), c = lot.lp(st.u + du, st.wm + st.n * 5.5);
+          stallLines.push({ x: (a.x + c.x) / 2, z: (a.z + c.z) / 2, yaw: lineYaw, len: 5.5 });
+        }
+      }
+      // landscaped islands with a tree at the ends of the double rows
+      for (const aw of lot.aislesW) for (const uu of [u0 + 6.15, u0 + L - 6.15]) {
+        const p = lot.lp(uu, aw + 9); if (aw + 9 < W0 + LD - 2) addTree(p.x, p.z, 0.9);
+        const isl = rectO(uu - 0.75, uu + 0.75, aw + 4.5, aw + 13.5);
+        driveways.push({ x: isl.cx, z: isl.cz, w: 1.5, d: 9, yaw: ye });
+      }
+      const bd = lot.D - LD - 4, o = rectO(u0 + 8, u0 + L - 8, W0 + LD + 4, W0 + LD + 4 + bd);
+      const sp = lot.lp(u0 + L / 2, W0 + LD + 3.85);
+      if (poi.park) { poi.sign = { x: sp.x, z: sp.z, yaw: lineYaw, y: 5 }; this.parkFrame = { e, u0: u0 + 8, u1: u0 + L - 8, w0: W0 + LD + 4, w1: W0 + lot.D, lp: lot.lp, yaw: ye, o }; return; }
+      const hh = addBuilding(o.cx, o.cz, L - 16, bd, poi.mall ? 11 : 8 + R() * 3, poi.mall ? 'glass' : R() < 0.5 ? 'brick' : 'office', ye);
+      if (ctx) ctx.placed.push(o);
+      poi.sign = { x: sp.x, z: sp.z, yaw: lineYaw, y: Math.min(hh - 1.4, poi.mall ? 8.5 : 6.6) };
+    };
 
     for (const f of this.faces) {
+      if (f.skip) continue;
       // raised sidewalk + block; pieces cut by the river drop to the riverbed as stone quay walls
       for (const pc of f.slabPieces) {
         const g = new THREE.ExtrudeGeometry(shapeOf(pc), { depth: f.cut ? 5.15 : 0.15, bevelEnabled: false, curveSegments: 1 });
@@ -1652,39 +2071,8 @@ export class City {
         } else poi.sign = { x: sp.x, z: sp.z, yaw: Math.atan2(-e.rx, -e.rz), y: 3.2 };
       }
 
-      // big-box stores: asphalt lot, two driveways, four rows of striped stalls, walkway and the store
-      for (const poi of f.stores || []) {
-        const lot = poi.lot, e = poi.edge, ye = yawAlong(e), W0 = lot.W0, u0 = lot.u0, L = lot.L;
-        const rectO = (a0, a1, b0, b1) => { const p = this.edgePoint(e, (a0 + a1) / 2, (b0 + b1) / 2); return mkO(p.x, p.z, (a1 - a0) / 2, (b1 - b0) / 2, ye); };
-        const lr = rectO(u0, u0 + L, W0, W0 + 44);
-        lotPlanes.push({ x: lr.cx, z: lr.cz, w: L, d: 44, yaw: ye });
-        for (const ug of [lot.du, lot.du2]) { const ap = rectO(ug - 3.6, ug + 3.6, CURB, W0); lotPlanes.push({ x: ap.cx, z: ap.cz, w: 7.2, d: W0 - CURB, yaw: ye }); }
-        const ww = rectO(u0 + 6, u0 + L - 6, W0 + 44, W0 + 48);
-        driveways.push({ x: ww.cx, z: ww.cz, w: L - 12, d: 4, yaw: ye });
-        // the fire lane's kerb line in front of the walkway
-        { const a = lot.lp(u0 + 7, W0 + 43.9), b = lot.lp(u0 + L - 7, W0 + 43.9); stallLines.push({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, yaw: Math.atan2(e.dx, e.dz), len: L - 14 }); }
-        placed.push(rectO(u0 - 2, u0 + L + 2, W0 - 1, W0 + lot.D + 1));
-        block(e, u0 - 5, u0 + L + 5);
-        poi.lotPoly = [lot.lp(u0, W0), lot.lp(u0 + L, W0), lot.lp(u0 + L, W0 + 44), lot.lp(u0, W0 + 44)];
-        const lineYaw = Math.atan2(-e.rx, -e.rz);
-        for (const st of lot.stalls) {
-          for (const du of [-1.45, 1.45]) {
-            const a = lot.lp(st.u + du, st.wm), c = lot.lp(st.u + du, st.wm + st.n * 5.5);
-            stallLines.push({ x: (a.x + c.x) / 2, z: (a.z + c.z) / 2, yaw: lineYaw, len: 5.5 });
-          }
-        }
-        // landscaped islands with a tree at the ends of the double rows
-        for (const uu of [u0 + 6.15, u0 + L - 6.15]) {
-          const p = lot.lp(uu, W0 + 19); addTree(p.x, p.z, 0.9);
-          const isl = rectO(uu - 0.75, uu + 0.75, W0 + 14.5, W0 + 23.5);
-          driveways.push({ x: isl.cx, z: isl.cz, w: 1.5, d: 9, yaw: ye });
-        }
-        const bd = lot.D - 48, o = rectO(u0 + 8, u0 + L - 8, W0 + 48, W0 + 48 + bd);
-        const hh = addBuilding(o.cx, o.cz, L - 16, bd, 8 + R() * 3, R() < 0.5 ? 'brick' : 'office', ye);
-        placed.push(o);
-        const sp = lot.lp(u0 + L / 2, W0 + 47.85);
-        poi.sign = { x: sp.x, z: sp.z, yaw: lineYaw, y: Math.min(hh - 1.4, 6.6) };
-      }
+      // big-box stores (and the mall): asphalt lot, two driveways, rows of striped stalls, walkway and the store
+      for (const poi of f.stores || []) bigLot(poi, { placed, block });
 
       if (f.park) {
         lawnPolys.push(...inner);
@@ -1771,6 +2159,8 @@ export class City {
       if (!dt) streetTrees();
     }
 
+    // the theme park, out past the beltway (its lot, then the rides behind)
+    for (const poi of this.attractions || []) if (poi.park) { bigLot(poi, null); this.buildThemePark(trees); }
     // Hilltop homes along the canyon road, facing the road, stepped into the slope
     for (const road of this.hillRoads) {
       if (!road.houses) continue;
@@ -1789,7 +2179,7 @@ export class City {
       }
     }
     // forests on the hills
-    for (const t of this.terrain.scatterTrees(16000)) trees.push(t);
+    for (const t of this.terrain.scatterTrees(26000)) trees.push(t);
 
     // slabs and lawns
     { const m = new THREE.Mesh(mergeGeometries(slabGeos), slabMat); m.receiveShadow = true; this.scene.add(m); }
@@ -1927,7 +2317,7 @@ export class City {
       return l.big ? Math.abs(c.u - l.du) < 6 || Math.abs(c.u - l.du2) < 6 : c.u > 29 && c.u < 43;
     });
     for (const e of this.edges) {
-      if (e.curve || e.a > e.b) continue;
+      if (e.curve || e.a > e.b || e.kind === 'fwy' || e.kind === 'ramp') continue;
       const span = e.len - e.ra - e.rb - 16;
       if (span < 6) continue;
       const n = Math.max(1, Math.round(span / 34));
@@ -1969,7 +2359,7 @@ export class City {
     for (const n of this.nodes) {
       if (n.pass) continue;
       for (const e of Object.values(n.in)) {
-        if (e.ctl === 'none') continue;
+        if (e.ctl === 'none' || e.ctl === 'yield' || e.noEntry) continue;
         const at = (a, w) => ({ x: n.x + e.dx * a + e.rx * w, z: n.z + e.dz * a + e.rz * w });
         const faceYaw = Math.atan2(-e.dx, -e.dz);
         if (e.ctl === 'light') {
@@ -2048,6 +2438,20 @@ export class City {
 
   update(dt, night) {
     this.simT += dt;
+    // the rides
+    if (this.coaster) {
+      const c = this.coaster, g = 9.81;
+      // the train is hauled up the lift hill and coasts the rest (energy from the height it has lost)
+      const p = c.curve.getPointAt((c.s / c.len) % 1), ahead = c.curve.getPointAt(((c.s + 2) / c.len) % 1);
+      const climbing = ahead.y > p.y + 0.05;
+      c.top = Math.max(c.top || 0, p.y);
+      c.v = climbing && c.v < 4.5 ? 4 : Math.max(3.5, Math.sqrt(Math.max(0, 2 * g * (c.top + 1.2 - p.y)) * 0.55));
+      c.s += c.v * dt;
+      if (p.y < 3.5 && climbing) c.top = 0; // back at the station: start the next lift
+      c.cars.forEach((m, k) => { const t = ((c.s - k * 2.4) / c.len % 1 + 1) % 1, q = c.curve.getPointAt(t), tn = c.curve.getTangentAt(t); m.position.copy(q); m.lookAt(q.clone().add(tn)); });
+    }
+    if (this.ferris) { const f = this.ferris; f.a += dt * 0.12; f.hub.rotation.z = f.a; f.gondolas.forEach((g, k) => { const a = (k / 16) * Math.PI * 2 + f.a; g.position.set(Math.cos(a) * 20, Math.sin(a) * 20 - 1.2, 1); g.rotation.z = -f.a; }); }
+    if (this.carousel) this.carousel.rotation.y += dt * 0.35;
     this._lt = (this._lt || 0) + dt;
     if (this._lt > 0.2) { this._lt = 0; this.updateLamps(); }
     const n = clamp(night, 0, 1);
