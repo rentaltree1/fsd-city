@@ -7,6 +7,7 @@ import { S, CURB, WALK, STOP, nodeCoord, rng, clamp } from './config.js';
 import * as TX from './textures.js';
 import { Terrain } from './terrain.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { TOUCH } from './touch.js';
 
 // [name, category, rough block i, j on a 20x20 planning chart, side, kW] — the street that ends up
 // nearest that spot (long enough for a lot, with room behind it) gets the parking lot.
@@ -140,7 +141,15 @@ export function worldUV(mat, sx, sy, roofColor = null) {
 }
 
 const dummy = new THREE.Object3D();
-function instanced(geo, mat, items, place, { shadow = true, receive = true, colors = null } = {}) {
+function instanced(geo, mat, items, place, { shadow = true, receive = true, colors = null, tile = 0 } = {}) {
+  // tile: spread over many square tiles (one mesh each) so the ones out of view are skipped
+  if (tile) {
+    const bins = new Map();
+    for (const it of items) { place(it, dummy); const key = `${Math.floor(dummy.position.x / tile)},${Math.floor(dummy.position.z / tile)}`; if (!bins.has(key)) bins.set(key, []); bins.get(key).push(it); }
+    const grp = new THREE.Group();
+    for (const list of bins.values()) { const m = instanced(geo, mat, list, place, { shadow, receive, colors }); m.computeBoundingSphere(); grp.add(m); }
+    return grp;
+  }
   const m = new THREE.InstancedMesh(geo, mat, Math.max(1, items.length));
   m.count = items.length;
   items.forEach((it, i) => { place(it, dummy); dummy.updateMatrix(); m.setMatrixAt(i, dummy.matrix); if (colors) m.setColorAt(i, colors(it)); });
@@ -1854,7 +1863,7 @@ export class City {
     const pr = rng(5);
     const blobs = [];
     for (const [ox, oy, oz, r] of [[0, 0, 0, 1], [0.55, -0.15, 0.2, 0.72], [-0.5, -0.1, -0.25, 0.75], [0.1, 0.45, -0.1, 0.7], [-0.2, -0.2, 0.55, 0.65]]) {
-      const b = new THREE.IcosahedronGeometry(r, 1);
+      const b = new THREE.IcosahedronGeometry(r, TOUCH ? 0 : 1); // (phones: a quarter of the triangles)
       const p = b.attributes.position;
       for (let i = 0; i < p.count; i++) { const k = 0.85 + pr() * 0.25; p.setXYZ(i, p.getX(i) * k + ox, p.getY(i) * k * 0.9 + oy, p.getZ(i) * k + oz); }
       blobs.push(b);
@@ -1869,10 +1878,11 @@ export class City {
     // city trees cast shadows; the thousands of hillside trees don't (they're mostly far away)
     for (const group of [trees.filter((t) => t.y === 0.15), trees.filter((t) => t.y !== 0.15)]) {
       const shadow = group.length && group[0].y === 0.15;
-      this.scene.add(instanced(trunk, trunkMat, group, (t, d) => { d.position.set(t.x, ty(t), t.z); d.rotation.set(0, 0, 0); d.scale.set(t.s, (t.type ? 2.2 : 3.2) * t.s, t.s); }, { shadow }));
+      const tile = shadow ? 450 : 600;
+      this.scene.add(instanced(trunk, trunkMat, group, (t, d) => { d.position.set(t.x, ty(t), t.z); d.rotation.set(0, 0, 0); d.scale.set(t.s, (t.type ? 2.2 : 3.2) * t.s, t.s); }, { shadow, tile }));
       const decid = group.filter((t) => !t.type), conif = group.filter((t) => t.type);
-      this.scene.add(instanced(crown, leaf, decid, (t, d) => { d.position.set(t.x, ty(t) + 4.2 * t.s, t.z); d.rotation.set(0, t.c * 6, 0); d.scale.set(2.3 * t.s, 2.3 * t.s, 2.3 * t.s); }, { shadow, colors: (t) => new THREE.Color().setHSL(0.24 + t.c * 0.07, 0.45, 0.2 + t.c * 0.1) }));
-      this.scene.add(instanced(cone, leaf, conif, (t, d) => { d.position.set(t.x, ty(t) + 1.2 * t.s, t.z); d.rotation.set(0, t.c * 6, 0); d.scale.set(2.1 * t.s, 8 * t.s, 2.1 * t.s); }, { shadow, colors: (t) => new THREE.Color().setHSL(0.3 + t.c * 0.05, 0.4, 0.13 + t.c * 0.06) }));
+      this.scene.add(instanced(crown, leaf, decid, (t, d) => { d.position.set(t.x, ty(t) + 4.2 * t.s, t.z); d.rotation.set(0, t.c * 6, 0); d.scale.set(2.3 * t.s, 2.3 * t.s, 2.3 * t.s); }, { shadow, tile, colors: (t) => new THREE.Color().setHSL(0.24 + t.c * 0.07, 0.45, 0.2 + t.c * 0.1) }));
+      this.scene.add(instanced(cone, leaf, conif, (t, d) => { d.position.set(t.x, ty(t) + 1.2 * t.s, t.z); d.rotation.set(0, t.c * 6, 0); d.scale.set(2.1 * t.s, 8 * t.s, 2.1 * t.s); }, { shadow, tile, colors: (t) => new THREE.Color().setHSL(0.3 + t.c * 0.05, 0.4, 0.13 + t.c * 0.06) }));
     }
 
     // ponds

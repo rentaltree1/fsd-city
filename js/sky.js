@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { clamp, lerp, smooth } from './config.js';
+import { TOUCH } from './touch.js';
 
 export class DayNight {
   constructor(renderer, scene) {
@@ -102,8 +103,9 @@ export class DayNight {
     this.moon.material.opacity = night;
     // regenerate reflections when the sun moves enough
     this.envTimer -= dt;
-    if (this.envTimer <= 0 && Math.abs(elD - this.lastEnvEl) > 0.6) {
-      this.envTimer = 1.5; this.lastEnvEl = elD;
+    // (phones: less often, each one is a stutter there)
+    if (this.envTimer <= 0 && Math.abs(elD - this.lastEnvEl) > (TOUCH ? 2.5 : 0.6)) {
+      this.envTimer = TOUCH ? 8 : 1.5; this.lastEnvEl = elD;
       const rt = this.pmrem.fromScene(this.envScene, 0, 0.1, 1000);
       if (this.envRT) this.envRT.dispose();
       this.envRT = rt;

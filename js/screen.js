@@ -205,7 +205,7 @@ export class CarScreen {
   // ---------- frame
   update(dt) {
     this.t += dt; this.acc += dt;
-    if (this.acc < 1 / 30) return;
+    if (this.acc < (this.minDt || 1 / 30)) return;
     const fdt = this.acc; this.acc = 0;
     this.draw(fdt);
     this.renderRT(fdt);

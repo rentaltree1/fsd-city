@@ -252,14 +252,31 @@ export class Terrain {
         .replace('#include <normal_fragment_maps>', '#ifdef USE_NORMALMAP\n vec3 mapN = texture2D(normalMap, vWP.xz / 7.0).xyz * 2.0 - 1.0; mapN.xy *= normalScale; normal = normalize(normal + vec3(mapN.x, 0.0, mapN.y) * 0.35);\n#endif');
     };
     mat.customProgramCacheKey = () => 'terrain';
-    const fine = new THREE.Mesh(this.mesh(2800, 10), mat);
-    fine.receiveShadow = true;
     // (the coarse far-field mesh sits well below the fine one wherever both exist: its 40 m cells would
     // otherwise bridge over road cuttings)
-    const coarse = new THREE.Mesh(this.mesh(this.size / 2, 40, 300), mat);
-    coarse.receiveShadow = true;
-    scene.add(fine, coarse);
-    this.meshes = [fine, coarse];
+    // each is cut into tiles so the parts behind the camera (or outside the shadow's reach) are skipped
+    this.meshes = [...this.tiles(this.mesh(2800, 10), 8, mat), ...this.tiles(this.mesh(this.size / 2, 40, 300), 4, mat)];
+    for (const m of this.meshes) { m.receiveShadow = true; scene.add(m); }
+  }
+  // split a square grid mesh into k x k meshes that share its vertex buffers, each with its own bounds
+  tiles(g, k, mat) {
+    const pos = g.attributes.position, n = Math.round(Math.sqrt(pos.count)) - 1, out = [];
+    for (let tj = 0; tj < k; tj++) for (let ti = 0; ti < k; ti++) {
+      const i0 = Math.floor((ti * n) / k), i1 = Math.floor(((ti + 1) * n) / k), j0 = Math.floor((tj * n) / k), j1 = Math.floor(((tj + 1) * n) / k);
+      const idx = new Uint32Array((i1 - i0) * (j1 - j0) * 6), box = new THREE.Box3(), v = new THREE.Vector3();
+      let t = 0;
+      for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+        const a = j * (n + 1) + i, b = a + 1, cc = a + n + 1, d = cc + 1;
+        idx[t++] = a; idx[t++] = cc; idx[t++] = b; idx[t++] = b; idx[t++] = cc; idx[t++] = d;
+      }
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) box.expandByPoint(v.fromBufferAttribute(pos, j * (n + 1) + i));
+      const tg = new THREE.BufferGeometry();
+      for (const name in g.attributes) tg.setAttribute(name, g.attributes[name]);
+      tg.setIndex(new THREE.BufferAttribute(idx, 1));
+      tg.boundingBox = box; tg.boundingSphere = box.getBoundingSphere(new THREE.Sphere());
+      out.push(new THREE.Mesh(tg, mat));
+    }
+    return out;
   }
 
   // forest on the hills, avoiding roads, cliffs and the snowline

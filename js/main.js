@@ -36,7 +36,7 @@ async function boot() {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, TOUCH ? 2 : 1.5));
   renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = TOUCH ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.outputColorSpace = THREE.SRGBColorSpace;
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.06, 9000);
@@ -47,7 +47,7 @@ async function boot() {
   setLoad('Paving roads and raising towers…'); await frame();
   const city = new City(scene);
   setLoad('Releasing traffic…'); await frame();
-  const traffic = new Traffic(scene, city, 48);
+  const traffic = new Traffic(scene, city, TOUCH ? 36 : 48); // (phones: a few fewer cars about)
   const home = city.pois.find((p) => p.name === 'Home');
   const startStall = home.lot.stalls[3];
   for (const lot of city.lots) if (!lot.big) for (const st of lot.stalls) if (st !== startStall && Math.random() < (lot.charger ? 0.3 : 0.42)) traffic.addParked(st, lot);
@@ -798,6 +798,8 @@ async function boot() {
     nav.update(dt, car, fsd);
     audio.update({ v: car.v, load: Math.max(0, car.accel) / 5, gear: car.gear, inside: inCar, dist: dCar, awake });
     updateCamera(dt);
+    // (phones: the small in-car screen redraws 15 times a second, the opened-up one 30)
+    if (TOUCH) screen.minDt = panelOpen() ? 1 / 30 : 1 / 15;
     if ((inCar || dCar < 12) && !headless) screen.update(dt);
     // hints
     hintT -= dt;
@@ -820,15 +822,19 @@ async function boot() {
         signal: car.signal, hazard: car.hazard, blinkOn: state.blinkOn, headlights: settings.headlights, muted: audio.muted, quality: settings.quality, steerAngle: car.steer,
       });
     }
-    // reflections
+    // reflections: one face of the cube at a time, spread over frames (all six at once was a hitch)
     cubeFrame++;
-    if (!headless && (settings.quality === 'High' ? cubeFrame % 10 === 0 : cubeFrame % 40 === 0)) {
+    if (!headless && cubeFrame % (settings.quality === 'High' ? 2 : TOUCH ? 8 : 6) === 0) {
+      const f = cubeFace = (cubeFace + 1) % 6;
+      if (f === 0) cubeCam.position.set(car.cx, 1.1, car.cz);
       model.root.visible = false; if (cable) cable.visible = false;
-      cubeCam.position.set(car.cx, 1.1, car.cz);
-      cubeCam.update(renderer, scene);
+      const prev = renderer.getRenderTarget();
+      renderer.setRenderTarget(cubeRT, f); renderer.render(scene, cubeCam.children[f]);
+      renderer.setRenderTarget(prev);
       model.root.visible = true; if (cable) cable.visible = true;
     }
   }
+  let cubeFace = 0;
 
   function refreshChargeAvail() {
     const s = fsd.findStall(car);
@@ -926,7 +932,9 @@ async function boot() {
 
   function render() {
     renderer.setRenderTarget(null);
-    renderer.shadowMap.needsUpdate = true;
+    // (phones: the shadows are redrawn every other frame; the lighting keeps using the matching light
+    // position in between, so they don't swim)
+    renderer.shadowMap.needsUpdate = !TOUCH || (++shadowFrame & 1) === 0;
     if (composer) composer.render(); else renderer.render(scene, camera);
     if (panelOpen()) {
       const r = touch.panelRect(), ac = renderer.autoClear;
@@ -938,13 +946,33 @@ async function boot() {
     }
   }
 
-  let fpsAcc = 0, fpsN = 0;
+  let fpsAcc = 0, fpsN = 0, shadowFrame = 0;
+  // phones: the render resolution follows the frame rate (sharper when there's headroom, softer instead
+  // of stuttering when there isn't)
+  // (a level that was too slow isn't tried again for half a minute)
+  const res = { max: Math.min(devicePixelRatio, 2), acc: 0, n: 0, calm: 0, bad: Infinity, badT: 0 };
+  function adaptResolution(rawDt) {
+    if (!TOUCH || settings.quality === 'High' || document.hidden || rawDt > 0.25) return;
+    res.acc += rawDt; res.n++; res.badT -= rawDt;
+    if (res.acc < 1.5) return;
+    const ms = (res.acc / res.n) * 1000; res.acc = 0; res.n = 0;
+    const cur = renderer.getPixelRatio();
+    let pr = cur;
+    if (ms > 24) { res.bad = pr; res.badT = 30; res.calm = 0; pr = Math.max(1, pr - (ms > 34 ? 0.25 : 0.125)); }
+    else if (ms < 18.5) {
+      res.calm += 1.5;
+      const up = Math.min(res.max, pr + 0.125);
+      if (res.calm >= 6 && (up < res.bad || res.badT <= 0)) { res.calm = 0; pr = up; }
+    } else res.calm = 0;
+    if (pr !== cur) { renderer.setPixelRatio(pr); renderer.setSize(innerWidth, innerHeight); }
+  }
   function loop(now) {
     requestAnimationFrame(loop);
-    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    const raw = (now - last) / 1000, dt = Math.min(0.05, raw); last = now;
     if (!started) { updateCamera(0.016); render(); return; }
     update(dt);
     render();
+    adaptResolution(raw);
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) { $('fps').textContent = `${Math.round(fpsN / fpsAcc)} fps · ${player.mode === 'car' ? `${Math.round(Math.abs(car.v) * MPH)} mph · ${car.gear}` : 'on foot'}${fsd.engaged ? ' · FSD' : ''}`; fpsAcc = 0; fpsN = 0; }
   }
@@ -953,6 +981,7 @@ async function boot() {
   model.root.position.set(car.cx, car.y, car.cz); model.root.rotation.y = yawFromHeading(car.h);
   model.update(0, { v: 0, steer: 0, accel: 0, latAcc: 0, dist: 0, signal: null, blinkOn: false, headlights: false, braking: false, gear: 'P', awake: false, night: 0, time: 0, charging: false });
   updateCamera(0.016);
+  model.root.visible = false; cubeCam.position.set(car.cx, 1.1, car.cz); cubeCam.update(renderer, scene); model.root.visible = true;
   requestAnimationFrame(loop);
   $('loading').classList.add('ready');
   setLoad('Ready');
