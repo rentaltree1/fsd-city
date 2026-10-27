@@ -141,10 +141,10 @@ export class Terrain {
       const sm = new Float32Array(n), W = 28;
       for (let k = 0; k < n; k++) { let s = 0, m = 0; for (let q = Math.max(0, k - W); q <= Math.min(n - 1, k + W); q++) { s += ys[q]; m++; } sm[k] = s / m; }
       for (let k = 0; k < 12; k++) { sm[k] = 0; sm[n - 1 - k] = 0; }
-      for (let pass = 0; pass < 2; pass++) {
-        for (let k = 1; k < n; k++) { const ds = Math.hypot(r.pts[k].x - r.pts[k - 1].x, r.pts[k].z - r.pts[k - 1].z); sm[k] = clamp(sm[k], sm[k - 1] - ds * 0.1, sm[k - 1] + ds * 0.1); }
-        for (let k = n - 2; k >= 0; k--) { const ds = Math.hypot(r.pts[k].x - r.pts[k + 1].x, r.pts[k].z - r.pts[k + 1].z); sm[k] = clamp(sm[k], sm[k + 1] - ds * 0.1, sm[k + 1] + ds * 0.1); }
-      }
+      // grade limit (10%) that only ever lowers the road: where the land is too steep the road cuts down
+      // into it (the hillside is carved back below) instead of lifting the pinned ends off the ground
+      for (let k = 1; k < n; k++) sm[k] = Math.min(sm[k], sm[k - 1] + Math.hypot(r.pts[k].x - r.pts[k - 1].x, r.pts[k].z - r.pts[k - 1].z) * 0.1);
+      for (let k = n - 2; k >= 0; k--) sm[k] = Math.min(sm[k], sm[k + 1] + Math.hypot(r.pts[k].x - r.pts[k + 1].x, r.pts[k].z - r.pts[k + 1].z) * 0.1);
       r.y = sm;
       for (let k = 0; k < n; k += 2) {
         const p = r.pts[k], key = Math.floor(p.x / 40) * 10000 + Math.floor(p.z / 40);
@@ -153,25 +153,40 @@ export class Terrain {
       }
     }
     // carve: flat under the road, blending back to the hillside over ~25 m
-    const nearest = (x, z) => {
+    const nearest = (x, z, reach = 1) => {
       let best = 1e9, by = 0;
       const kx = Math.floor(x / 40), kz = Math.floor(z / 40);
-      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+      for (let a = -reach; a <= reach; a++) for (let b = -reach; b <= reach; b++) {
         const l = hash.get((kx + a) * 10000 + kz + b); if (!l) continue;
         for (const s of l) { const d = (s[0] - x) ** 2 + (s[1] - z) ** 2; if (d < best) { best = d; by = s[2]; } }
       }
       return [Math.sqrt(best), by];
     };
-    this.nearestRoad = nearest;
+    this.nearestRoad = (x, z) => nearest(x, z);
     this.carveRiver();
     for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
       const x = i * c - half, z = j * c - half;
       if (this.cityD[this.idx(i, j)] < -20) continue;
-      const [d, ry] = nearest(x, z);
-      if (d > 50) continue;
       const k = this.idx(i, j);
-      if (d < 21) { h[k] = ry; this.sink[k] = 0.3; continue; } // flat bench under road + shoulders (grid is 10 m)
-      h[k] = lerp(h[k], ry, 1 - smooth((d - 21) / 29));
+      // where the road cuts deep into a hill the banks lean back further (about 1 in 1.1), not a cliff
+      const [d, ry] = nearest(x, z, h[k] > 25 ? 3 : 1);
+      const blend = Math.min(110, 29 + Math.max(0, h[k] - ry) * 0.9);
+      if (d > 21 + blend) continue;
+      if (d < 21) { h[k] = ry; this.sink[k] = 0.3; }  // flat bench under road + shoulders (grid is 10 m)
+      else h[k] = lerp(h[k], ry, 1 - smooth((d - 21) / blend));
+      // inside the city limits the streets and junctions are drawn at ground level: stay under them
+      if (this.cityD[k] < 0) { h[k] = Math.min(h[k], -0.05); this.sink[k] = 0.3; }
+    }
+    // town streets running along the city limits (the ring road, its junctions): the hills start back
+    // from their sidewalks, never over them
+    if (this.streetNear) for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+      const k = this.idx(i, j), cd = this.cityD[k];
+      if (cd < -30 || cd > 90 || h[k] <= -0.05) continue;
+      const x = i * c - half, z = j * c - half;
+      if (!this.streetNear(x, z, 38)) continue;
+      if (this.streetNear(x, z, 12)) { h[k] = -0.05; this.sink[k] = 0.3; }
+      else if (this.streetNear(x, z, 24)) h[k] = Math.min(h[k], h[k] * 0.35);
+      else if (this.streetNear(x, z, 38)) h[k] = Math.min(h[k], h[k] * 0.7);
     }
   }
   rawAt(x, z) { return rawHeight(x, z, this.cityDist(x, z)); }
@@ -239,7 +254,9 @@ export class Terrain {
     mat.customProgramCacheKey = () => 'terrain';
     const fine = new THREE.Mesh(this.mesh(2800, 10), mat);
     fine.receiveShadow = true;
-    const coarse = new THREE.Mesh(this.mesh(this.size / 2, 40, 6), mat);
+    // (the coarse far-field mesh sits well below the fine one wherever both exist: its 40 m cells would
+    // otherwise bridge over road cuttings)
+    const coarse = new THREE.Mesh(this.mesh(this.size / 2, 40, 300), mat);
     coarse.receiveShadow = true;
     scene.add(fine, coarse);
     this.meshes = [fine, coarse];

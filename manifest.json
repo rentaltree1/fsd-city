@@ -1,0 +1,15 @@
+{
+  "name": "FSD City",
+  "short_name": "FSD City",
+  "description": "Drive a Model Y or Cybertruck through a city, or let Full Self-Driving (Supervised) drive you.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0c0d",
+  "theme_color": "#0b0c0d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

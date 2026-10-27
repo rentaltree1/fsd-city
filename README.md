@@ -4,6 +4,13 @@ A three.js driving game: a Model Y and a Cybertruck with Full Self-Driving (Supe
 of traffic, Smart Summon, and an 8-camera view. It's a static site: `index.html` plus the `js/` folder,
 no build step.
 
+## Phones
+
+On a phone or tablet the game switches to touch controls: a thumbstick and drag-to-look on foot; a
+steering wheel, pedals, P R N D, turn signals and an FSD button in the car; the car's touchscreen opens
+big; pinch zooms from the driver's seat out to around the car. Hold the phone sideways. On iPhone, tap
+Share → **Add to Home Screen** and start it from there for full screen.
+
 ## Run it on your own computer
 
 Any static file server works, for example (with Python installed):

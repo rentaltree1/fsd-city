@@ -1,6 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <title>Model Y FSD City</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
+<meta name="theme-color" content="#0b0c0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FSD City">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -83,10 +95,126 @@
   .ph-note { text-align: center; font: 500 11px var(--ui); color: #5c5e62; }
   @media (prefers-reduced-motion: reduce) { #phone { transition: none; } }
   @media (prefers-reduced-motion: reduce) { #loading, #hint { transition: none; } }
+
+  /* ---------- phones and tablets (html.touch, set by js/touch.js) ---------- */
+  html.touch, html.touch body { touch-action: none; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; position: fixed; inset: 0; }
+  html.touch #game { touch-action: none; }
+  html.touch #fps, html.touch #helpBtn, html.touch .desk-only { display: none !important; }
+  .touch-only { display: none; }
+  html.touch .touch-only { display: revert; }
+  html.touch #hint { bottom: auto; top: calc(66px + env(safe-area-inset-top, 0px)); font-size: 14px; line-height: 1.35; padding: 8px 16px; white-space: normal; text-align: center; width: max-content; max-width: min(560px, 62vw); border-radius: 16px; z-index: 4; }
+  html.touch #help { top: calc(60px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); max-height: calc(100% - 80px - env(safe-area-inset-top, 0px)); overflow: auto; z-index: 6; touch-action: pan-y; }
+  /* start screen: scrolls on a short landscape screen, picker side by side */
+  html.touch #loading { place-items: start center; overflow-y: auto; touch-action: pan-y; padding-top: max(18px, env(safe-area-inset-top, 0px)); padding-bottom: max(18px, env(safe-area-inset-bottom, 0px)); }
+  html.touch .card { margin: auto 0; gap: 14px; }
+  html.touch .pick { grid-template-columns: 1fr 1fr; }
+  html.touch .pk { padding: 10px 12px; }
+  html.touch .pk svg { height: 40px; }
+  html.touch #start { padding: 15px 34px; font-size: 17px; }
+  html.touch .lede { font-size: 14px; }
+  @media (max-height: 520px) { html.touch .title { font-size: 28px; } html.touch .lede { display: none; } html.touch .card { gap: 12px; } }
+  /* the Tesla app fills the screen (you're already holding a phone) */
+  html.touch #phone { inset: 0; height: auto; aspect-ratio: auto; border-radius: 0; padding: 0; box-shadow: none; background: #f4f5f6; z-index: 7; }
+  html.touch .ph { border-radius: 0; max-width: 520px; margin: 0 auto; padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); box-sizing: border-box; }
+  html.touch .ph-notch, html.touch .ph-bar { display: none; }
+  html.touch .ph-head { padding-top: 14px; }
+  html.touch #kbd { left: 0 !important; pointer-events: none; }
+  html.touch .ph-list { touch-action: pan-y; }
+  .ph-done { display: none; }
+  html.touch .ph-done { display: block; margin-left: auto; background: #e4e6e9; border: 0; border-radius: 999px; padding: 7px 14px; font: 600 14px var(--ui); color: #171a20; cursor: pointer; }
+  html.touch .ph-car { min-height: 0; overflow: hidden; }
+  html.touch .ph-car svg { max-height: 100%; width: auto; max-width: 82%; }
+  @media (orientation: landscape) and (max-height: 520px) { html.touch .ph-car { height: 20%; } html.touch .ph-quick { padding-top: 2px; padding-bottom: 6px; } html.touch .ph-quick span { width: 40px; height: 40px; } }
+
+  #touch { position: fixed; inset: 0; pointer-events: none; z-index: 3; font-family: var(--ui); color: #fff; --pad-l: max(14px, env(safe-area-inset-left, 0px)); --pad-r: max(14px, env(safe-area-inset-right, 0px)); --pad-t: max(10px, env(safe-area-inset-top, 0px)); --pad-b: max(12px, env(safe-area-inset-bottom, 0px)); }
+  #touch button, #touch .t-zone, #touch .t-wheel, #touch .t-pedal { pointer-events: auto; touch-action: none; }
+  #touch .t-foot, #touch .t-car { display: none; }
+  #touch[data-mode="foot"] .t-foot, #touch[data-mode="car"] .t-car { display: block; }
+  #touch.phone-open .t-foot { display: none; }
+  .t-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 48px; min-height: 48px; padding: 0 14px; border-radius: 16px; border: 1px solid rgba(255,255,255,.14); background: rgba(18,19,22,.66); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); color: #fff; font: 600 14px var(--ui); cursor: pointer; }
+  .t-btn:active { background: rgba(62,106,225,.55); }
+  .t-btn.t-sq { padding: 0; width: 48px; }
+  .t-btn.t-big { min-height: 58px; padding: 0 22px; font-size: 16px; border-radius: 20px; }
+  .t-btn.t-blue { background: rgba(62,106,225,.92); border-color: rgba(255,255,255,.25); }
+  .t-btn[hidden] { display: none; }
+  /* on foot */
+  .t-zone { position: absolute; left: 0; bottom: 0; width: 46%; height: 72%; }
+  .t-stick { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border-radius: 50%; background: rgba(255,255,255,.08); border: 2px solid rgba(255,255,255,.28); opacity: 0; transition: opacity .15s; pointer-events: none; }
+  .t-stick.on { opacity: 1; }
+  .t-knob { position: absolute; left: 50%; top: 50%; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 4px 14px rgba(0,0,0,.35); transform: translate(-50%,-50%); }
+  .t-col { position: absolute; display: grid; gap: 10px; justify-items: end; }
+  .t-foot-btns { right: var(--pad-r); bottom: var(--pad-b); }
+  .t-help { position: absolute; top: var(--pad-t); left: var(--pad-l); width: 44px; min-width: 44px; min-height: 44px; padding: 0; border-radius: 14px; }
+  /* in the car: top bar */
+  .t-top { position: absolute; top: var(--pad-t); left: var(--pad-l); right: var(--pad-r); display: flex; align-items: flex-start; gap: 10px; }
+  .t-fsd { pointer-events: auto; display: flex; align-items: center; gap: 9px; min-height: 52px; max-width: 46vw; padding: 0 16px 0 10px; border-radius: 18px; border: 1px solid rgba(255,255,255,.18); background: rgba(18,19,22,.7); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); color: #fff; text-align: left; cursor: pointer; }
+  .t-fsd-ico { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.12); flex: none; }
+  .t-fsd-txt { display: grid; line-height: 1.15; min-width: 0; }
+  .t-fsd b { font: 700 15px var(--ui); letter-spacing: .04em; }
+  .t-fsd small { font: 500 11px var(--ui); color: rgba(255,255,255,.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .t-fsd.on { background: rgba(62,106,225,.92); border-color: rgba(255,255,255,.3); }
+  .t-fsd.on .t-fsd-ico { background: rgba(255,255,255,.22); }
+  .t-fsd.on small { color: rgba(255,255,255,.9); }
+  .t-speed { margin: 0 auto; display: flex; align-items: baseline; gap: 4px; padding: 6px 14px; border-radius: 16px; background: rgba(18,19,22,.55); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); font-variant-numeric: tabular-nums; }
+  .t-speed b { font: 700 26px/1 var(--ui); }
+  .t-speed small { font: 600 11px var(--ui); color: rgba(255,255,255,.7); }
+  .t-speed i { font: 700 13px var(--ui); font-style: normal; margin-left: 8px; color: #8fb0ff; }
+  .t-row { display: flex; gap: 8px; }
+  .t-menu { position: absolute; top: calc(var(--pad-t) + 58px); right: var(--pad-r); display: none; min-width: 210px; padding: 6px; border-radius: 16px; background: rgba(18,19,22,.9); border: 1px solid rgba(255,255,255,.14); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); z-index: 2; }
+  .t-menu.open { display: grid; }
+  .t-menu button { display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 0 12px; border: 0; border-radius: 11px; background: none; color: #fff; font: 500 15px var(--ui); text-align: left; cursor: pointer; }
+  .t-menu button:active, .t-menu button.on { background: rgba(62,106,225,.45); }
+  /* steering wheel + signals, bottom left */
+  .t-drive { position: absolute; left: var(--pad-l); bottom: var(--pad-b); display: grid; justify-items: center; gap: 8px; }
+  .t-signals { display: flex; gap: 74px; }
+  .t-sig { width: 50px; padding: 0; color: rgba(255,255,255,.75); }
+  .t-sig.on { color: #3ccf6e; border-color: rgba(60,207,110,.6); }
+  .t-sig.on.blink { background: rgba(60,207,110,.3); }
+  .t-wheel { width: 176px; height: 176px; border-radius: 50%; display: grid; place-items: center; background: radial-gradient(circle, rgba(18,19,22,.5) 55%, rgba(18,19,22,.25) 72%, transparent 73%); }
+  .t-wheel-svg { width: 150px; height: 150px; filter: drop-shadow(0 3px 8px rgba(0,0,0,.45)); }
+  /* gears + pedals, bottom right */
+  .t-right { position: absolute; right: var(--pad-r); bottom: var(--pad-b); display: grid; gap: 10px; justify-items: end; }
+  .t-gears { display: flex; padding: 4px; gap: 2px; border-radius: 16px; background: rgba(18,19,22,.66); border: 1px solid rgba(255,255,255,.14); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  .t-gears button { width: 40px; height: 40px; border: 0; border-radius: 12px; background: none; color: rgba(255,255,255,.6); font: 700 16px var(--ui); cursor: pointer; }
+  .t-gears button.on { background: #fff; color: #111; }
+  .t-pedals { display: flex; gap: 12px; align-items: flex-end; }
+  .t-pedal { position: relative; overflow: hidden; display: grid; place-items: end center; padding-bottom: 12px; box-sizing: border-box; border-radius: 18px; border: 1px solid rgba(255,255,255,.18); background: rgba(18,19,22,.6); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); font: 700 11px var(--ui); letter-spacing: .12em; color: rgba(255,255,255,.8); }
+  .t-pedal i { position: absolute; inset: 0; transform-origin: bottom; transform: scaleY(0); transition: transform .06s; }
+  .t-pedal span { position: relative; }
+  .t-brake { width: 86px; height: 104px; }
+  .t-brake i { background: linear-gradient(to top, rgba(232,33,39,.75), rgba(232,33,39,.35)); }
+  .t-accel { width: 70px; height: 150px; }
+  .t-accel i { background: linear-gradient(to top, rgba(60,207,110,.7), rgba(60,207,110,.3)); }
+  .t-pedal.on { border-color: rgba(255,255,255,.45); }
+  .t-close { position: absolute; display: none; }
+  /* the touchscreen opened up: the wheel makes way, a close button sits at its corner */
+  #touch.screen-open .t-drive, #touch.screen-open .t-speed, #touch.screen-open .t-row, #touch.screen-open .t-fsd { display: none; }
+  #touch.screen-open .t-close { display: inline-flex; right: var(--pad-r); top: var(--pad-t); }
+  .t-rotate { position: absolute; left: 50%; top: calc(var(--pad-t) + 64px); transform: translateX(-50%); display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 32px); padding: 10px 10px 10px 14px; border-radius: 14px; background: rgba(18,19,22,.85); font: 500 13px var(--ui); pointer-events: auto; }
+  .t-rotate[hidden] { display: none; }
+  .t-rotate button { width: 30px; height: 30px; border-radius: 50%; border: 0; background: rgba(255,255,255,.12); color: #fff; display: grid; place-items: center; pointer-events: auto; }
+  /* portrait: everything a size smaller, the wheel and pedals along the bottom */
+  @media (orientation: portrait) {
+    .t-wheel { width: 150px; height: 150px; } .t-wheel-svg { width: 128px; height: 128px; }
+    .t-signals { gap: 52px; }
+    .t-accel { height: 128px; width: 64px; } .t-brake { height: 92px; width: 76px; }
+    .t-top { flex-wrap: wrap; } .t-speed { order: 3; margin: 0; } .t-fsd { max-width: calc(100vw - 260px); }
+    #touch.screen-open .t-right { display: none; }
+    .t-rotate { top: calc(var(--pad-t) + 118px); }
+    html.touch #hint { top: calc(176px + env(safe-area-inset-top, 0px)); max-width: calc(100vw - 32px); }
+  }
+  /* short landscape screens (phones) */
+  @media (orientation: landscape) and (max-height: 430px) {
+    .t-wheel { width: 160px; height: 160px; } .t-wheel-svg { width: 138px; height: 138px; }
+    .t-signals { gap: 66px; } .t-drive { gap: 4px; }
+    .t-accel { height: 136px; } .t-brake { height: 94px; }
+  }
 </style>
+</head>
+<body>
 
 <canvas id="game" tabindex="0"></canvas>
-<input id="kbd" type="text" autocomplete="off" spellcheck="false" aria-label="Touchscreen keyboard input" style="position:fixed;left:-2000px;top:0;width:10px;opacity:0">
+<input id="kbd" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Touchscreen keyboard input" style="position:fixed;left:-2000px;top:0;width:10px;opacity:0;font-size:16px">
 
 <div id="hud">
   <div id="fps">loading…</div>
@@ -124,10 +252,11 @@
       <button id="start" type="button" disabled>Get in</button>
       <span id="loadmsg">Loading three.js…</span>
     </div>
-    <div class="cols">
+    <div class="cols desk-only">
       <div class="keys"><b>W A S D</b><span>Walk / drive</span><b>E</b><span>Get in / out</span><b>Click</b><span>Doors, frunk, trunk, screen</span></div>
       <div class="keys"><b>S · A · D</b><span>Take over from FSD</span><b>Right drag</b><span>Look around</span><b>?</b><span>All controls</span></div>
     </div>
+    <p class="touch-only" style="margin:0;font-size:12.5px;line-height:1.45;color:var(--dim)">Best played sideways. For full screen, tap Share then <b>Add to Home Screen</b> and open it from there.</p>
   </div>
 </div>
 
@@ -138,3 +267,5 @@
 } }
 </script>
 <script type="module" src="js/main.js"></script>
+</body>
+</html>

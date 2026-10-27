@@ -17,16 +17,24 @@ import { CarScreen, Nav, SW, SH } from './screen.js';
 import { CarAudio } from './audio.js';
 import { DayNight } from './sky.js';
 import { setNPCNight } from './npc.js';
+import { TOUCH, TouchUI } from './touch.js';
 
 const DEG = Math.PI / 180;
 const $ = (id) => document.getElementById(id);
 const setLoad = (t) => { const el = $('loadmsg'); if (el) el.textContent = t; };
 const frame = () => new Promise((r) => setTimeout(r, 30));
+// the same message worded for a keyboard or for a touchscreen
+const tw = (desk, touch) => (TOUCH ? touch : desk);
+if (TOUCH) {
+  document.documentElement.classList.add('touch');
+  // Safari's own pinch zoom would fight the game's
+  for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, (e) => e.preventDefault());
+}
 
 async function boot() {
   const canvas = $('game');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, TOUCH ? 2 : 1.5));
   renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -49,7 +57,7 @@ async function boot() {
   const car = new Vehicle(city);
   car.y = 0.15;
   startStall.occupied = true;
-  const settings = { headlights: 'Auto', showCones: false, timePreset: 'Afternoon', timeLabel: '60x', timeScale: 60, quality: 'High', paint: 'Quicksilver' };
+  const settings = { headlights: 'Auto', showCones: false, timePreset: 'Afternoon', timeLabel: '60x', timeScale: 60, quality: TOUCH ? 'Medium' : 'High', paint: 'Quicksilver' };
   // the cars you can drive: dimensions, cameras, driver's eye, door and charge port, paints
   const VEHICLES = {
     modely: {
@@ -131,7 +139,8 @@ async function boot() {
     for (const o of hide) o.visible = true;
   }
 
-  const toast = (title, sub, color) => screen.showAlert(title, sub, color);
+  // (on a phone the car's screen is too small to read from the driver's view: alerts also show up top)
+  const toast = (title, sub, color) => { screen.showAlert(title, sub, color); if (TOUCH) setHint(sub ? `${title} · ${sub}` : title, 4); };
   const isClosed = () => !model.anyDoorOpen() && !model.isOpen('frunk') && !model.isOpen('trunk');
   const act = {
     toggle(k) {
@@ -178,7 +187,7 @@ async function boot() {
       if (err) { toast('Self-Driving unavailable', err, '#5c5e62'); audio.chime('error'); return; }
       if (leaving && leaving.st) leaving.st.occupied = false;
       audio.chime('fsdOn');
-      toast('Self-Driving (Supervised) engaged', 'Pay attention to the road. Press S, A or D to take over.');
+      toast('Self-Driving (Supervised) engaged', tw('Pay attention to the road. Press S, A or D to take over.', 'Pay attention to the road. Brake or steer to take over.'));
     },
     // a stall picked on the Supercharger map: Self-Driving backs into that one
     chooseStall(lot, st) {
@@ -281,6 +290,51 @@ async function boot() {
   Object.assign(late, { screen, game, viz });
   const phone = new Phone(game, player);
   game.phone = phone;
+
+  // ---------------- touch controls (phones, tablets)
+  // touchScreen: the car's touchscreen opened up as a big panel over the view
+  let touchScreen = false, lookTouchT = 0;
+  const touch = TOUCH ? new TouchUI({ audio: () => audio.init(), action: touchAction }) : null;
+  function touchAction(a, arg) {
+    if (a === 'enter') tryEnter();
+    else if (a === 'phone') phone.toggle();
+    else if (a === 'help') $('help').classList.toggle('show');
+    else if (a === 'fsd') act.fsdButton();
+    else if (a === 'screen') { touchScreen = !touchScreen; screen.pointer(0, 0, 'up'); }
+    else if (a === 'view') {
+      const o = player.orbit;
+      player.camMode = { fp: 'chase', chase: 'orbit', orbit: 'fp' }[player.camMode] || 'fp';
+      if (player.camMode === 'orbit') { o.a = 2.5; o.e = 0.32; o.d = o.dT = 9; }
+      if (player.camMode === 'fp') { player.lookYaw = 0; player.lookPitch = -0.08; zoomFov = 72; }
+    } else if (a === 'exit') exitCar();
+    else if (a === 'hazard') act.hazard();
+    else if (a === 'lights') act.cycleHeadlights();
+    else if (a === 'mute') audio.setMuted(!audio.muted);
+    else if (a === 'quality') act.setQuality(settings.quality === 'High' ? 'Medium' : 'High');
+    else if (a === 'sigL' || a === 'sigR') { const s = a === 'sigL' ? 'L' : 'R'; car.signal = car.signal === s ? null : s; signalArmed = false; }
+    else if (a === 'gear') act.setGear(arg);
+    else if (a === 'honk') { audio.hornOn(); setTimeout(() => audio.hornOff(), 320); }
+    else if (a === 'hornOn') audio.hornOn();
+    else if (a === 'hornOff') audio.hornOff();
+    else if (a === 'brake') { if (fsd.engaged && !fsd.summon) disengage('Self-Driving disengaged', 'Brake pressed — you have control'); }
+  }
+  if (TOUCH) {
+    $('help').innerHTML = `<h3>On foot</h3><div class="keys"><b>Left thumb</b><span>Walk · push to the edge to run</span><b>Drag</b><span>Look around</span><b>Tap</b><span>Open/close doors, frunk, trunk, charge port</span><b>Get in</b><span>Appears at the driver door</span><b>Phone</b><span>Tesla app and Smart Summon</span></div>
+      <h3>Driving</h3><div class="keys"><b>Wheel</b><span>Drag left / right to steer · tap the middle to honk</span><b>GO · BRAKE</b><span>Press · slide up to press harder</span><b>P R N D</b><span>Gear</span><b>Arrows</b><span>Turn signals</span><b>Drag</b><span>Look around · orbit the car outside</span><b>Pinch</b><span>Zoom from the driver's seat out to around the car</span><b>Double tap</b><span>Back to the driver's view</span></div>
+      <h3>Touchscreen</h3><div class="keys"><b>Screen button</b><span>Opens the car's screen big</span><b>Drag · pinch</b><span>Pan and zoom the map, scroll lists</span></div>
+      <h3>Self-Driving (Supervised)</h3><div class="keys"><b>FSD</b><span>Engage (set a destination on the screen first)</span><b>Brake · steer</b><span>Take over</span><b>GO</b><span>Go faster without disengaging</span></div>`;
+    $('help').addEventListener('click', () => $('help').classList.remove('show'));
+  }
+  // the touchscreen panel: where it is, and a quad that draws the screen's picture there
+  const panelScene = new THREE.Scene(), panelCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  panelScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: screen.rt.texture, toneMapped: false, depthTest: false, depthWrite: false })));
+  const panelOpen = () => touchScreen && player.mode === 'car';
+  const panelAt = (x, y) => {
+    if (!panelOpen()) return null;
+    const r = touch.panelRect();
+    if (x < r.x || y < r.y || x > r.x + r.w || y > r.y + r.h) return null;
+    return { px: ((x - r.x) / r.w) * SW, py: ((y - r.y) / r.h) * SH };
+  };
   // if anything grabs the mouse while the phone is out, give it straight back
   document.addEventListener('pointerlockchange', () => { if (phone.open && document.pointerLockElement) document.exitPointerLock(); });
   model.screenMesh.material.map = screen.rt.texture;
@@ -290,9 +344,10 @@ async function boot() {
   let composer = null, bloom = null;
   function applyQuality() {
     const hi = settings.quality === 'High';
-    renderer.setPixelRatio(hi ? Math.min(devicePixelRatio, 1.5) : 1);
+    // (phones: sharp at up to 2x even on Medium, without the bloom pass and its multisampled buffer)
+    renderer.setPixelRatio(hi ? Math.min(devicePixelRatio, 1.5) : TOUCH ? Math.min(devicePixelRatio, 2) : 1);
     renderer.setSize(innerWidth, innerHeight);
-    sky.sun.shadow.mapSize.set(hi ? 2048 : 1024, hi ? 2048 : 1024);
+    sky.sun.shadow.mapSize.set(hi && !TOUCH ? 2048 : 1024, hi && !TOUCH ? 2048 : 1024);
     if (sky.sun.shadow.map) { sky.sun.shadow.map.dispose(); sky.sun.shadow.map = null; }
     if (hi) {
       const rt = new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), { type: THREE.HalfFloatType, samples: 4 });
@@ -367,38 +422,99 @@ async function boot() {
     const hits = ray.intersectObjects([model.screenMesh, ...model.interact.filter((m) => m.userData.inside)], false);
     return hits[0] || null;
   }
+  // touches on the view itself (the on-screen controls keep their own): one finger looks, orbits or taps,
+  // two fingers pinch to zoom
+  const touches = new Map();
+  let pinch = null, lastTap = null, tapStart = null, panelDrag = null;
+  const pinchDist = () => { const [a, b] = [...touches.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+  const pinchMid = () => { const [a, b] = [...touches.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; };
   canvas.addEventListener('pointerdown', (e) => {
     if (!started) return;
     audio.init();
     setMouse(e);
+    const isTouch = e.pointerType === 'touch';
+    if (isTouch) {
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2) {
+        // a second finger: pinch, and whatever the first one was doing stops
+        if (panelDrag) { screen.pointer(0, 0, 'up'); panelDrag = null; }
+        if (leftDown && leftDown.screen) screen.pointer(0, 0, 'up');
+        footDrag = null; leftDown = null; tapStart = null; lastTap = null;
+        const m = pinchMid();
+        pinch = { d: pinchDist(), panel: panelAt(m.x, m.y) };
+        return;
+      }
+      if (touches.size > 2) return;
+      const pp = panelAt(e.clientX, e.clientY);
+      if (pp) { panelDrag = { id: e.pointerId, px: pp.px, py: pp.py, moved: 0, acc: 0, scrolled: false }; screen.pointer(pp.px, pp.py, 'down'); return; }
+      // double tap in the car (two quick taps in one spot): back to the driver's seat, looking ahead
+      const now = performance.now();
+      if (player.mode === 'car' && lastTap && now - lastTap.t < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) { player.camMode = 'fp'; player.lookYaw = 0; player.lookPitch = -0.08; zoomFov = 72; lastTap = null; }
+      tapStart = { id: e.pointerId, t: now, x: e.clientX, y: e.clientY };
+    }
     if (player.mode === 'foot') {
       if (document.pointerLockElement === canvas) { if (e.button === 0) footClick(false); return; }
-      footDrag = { x: e.clientX, y: e.clientY, moved: 0 };
+      footDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0 };
       // with the phone out the mouse stays free for tapping it (drag still looks around)
-      if (!lockFailed && !phone.open) tryLock();
+      if (!TOUCH && !lockFailed && !phone.open) tryLock();
       return;
     }
     if (e.button === 2) { rightDrag = { x: e.clientX, y: e.clientY }; return; }
-    if (player.camMode !== 'fp') { leftDown = { x: e.clientX, y: e.clientY }; return; }
+    if (player.camMode !== 'fp') { leftDown = { id: e.pointerId, x: e.clientX, y: e.clientY, touch: isTouch }; return; }
     const h = screenHit();
     if (h && h.object === model.screenMesh) {
-      leftDown = { screen: true, x: e.clientX, y: e.clientY };
+      leftDown = { id: e.pointerId, screen: true, x: e.clientX, y: e.clientY };
       screen.pointer(h.uv.x * SW, (1 - h.uv.y) * SH, 'down');
     } else if (h && h.object.userData.action) act.toggle(h.object.userData.action);
-    else leftDown = { x: e.clientX, y: e.clientY };
+    else leftDown = { id: e.pointerId, x: e.clientX, y: e.clientY, touch: isTouch };
   });
   addEventListener('pointermove', (e) => {
     if (!started) return;
+    if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch) {
+        if (touches.size < 2) return;
+        const d = pinchDist(), r = d / pinch.d;
+        if (!pinch.panel && player.mode === 'car' && player.camMode !== 'fp') {
+          // outside the car the distance follows the fingers smoothly (closer than 4 m: back in the seat)
+          const o = player.orbit;
+          if (player.camMode === 'chase') { player.camMode = 'orbit'; o.a = 0; o.e = 0.3; o.d = o.dT = 8; }
+          o.dT = Math.min(40, (o.dT ?? o.d) / r); pinch.d = d;
+          if (o.dT < 4) { player.camMode = 'fp'; player.lookYaw = 0; player.lookPitch = -0.08; zoomFov = 72; o.dT = 6.5; pinch.d = d; }
+        } else if (r > 1.12 || r < 0.89) {
+          const dir = r > 1 ? -1 : 1; // fingers apart: zoom in
+          if (pinch.panel) { const m = pinchMid(), pp = panelAt(m.x, m.y) || pinch.panel; screen.wheel(pp.px, pp.py, dir); }
+          else zoomStep(dir);
+          pinch.d = d;
+        }
+        return;
+      }
+    }
+    if (panelDrag) {
+      if (e.pointerId !== panelDrag.id) return;
+      const pp = panelAt(e.clientX, e.clientY);
+      if (!pp) return;
+      panelDrag.moved += Math.abs(pp.px - panelDrag.px) + Math.abs(pp.py - panelDrag.py);
+      screen.pointer(pp.px, pp.py, 'move');
+      // outside the map a drag scrolls the list under the finger, a step per row
+      if (!screen.drag) {
+        panelDrag.acc += pp.py - panelDrag.py;
+        while (Math.abs(panelDrag.acc) > 56) { const s = Math.sign(panelDrag.acc); screen.wheel(pp.px, pp.py, -s); panelDrag.acc -= s * 56; panelDrag.scrolled = true; }
+      }
+      panelDrag.px = pp.px; panelDrag.py = pp.py;
+      return;
+    }
     if (player.mode === 'foot' && document.pointerLockElement === canvas) {
       player.yaw -= e.movementX * 0.0022; player.pitch = clamp(player.pitch - e.movementY * 0.0022, -1.4, 1.4);
       return;
     }
     setMouse(e);
+    const look = e.pointerType === 'touch' ? 0.0052 : 0.004;
     if (player.mode === 'foot') {
-      if (footDrag) {
+      if (footDrag && footDrag.id === e.pointerId) {
         const dx = e.clientX - footDrag.x, dy = e.clientY - footDrag.y;
         footDrag.moved += Math.abs(dx) + Math.abs(dy);
-        player.yaw -= dx * 0.004; player.pitch = clamp(player.pitch - dy * 0.004, -1.4, 1.4);
+        player.yaw -= dx * look; player.pitch = clamp(player.pitch - dy * look, -1.4, 1.4);
         footDrag.x = e.clientX; footDrag.y = e.clientY;
       }
       return;
@@ -416,27 +532,71 @@ async function boot() {
       rightDrag = { x: e.clientX, y: e.clientY }; player.focusScreen = false;
       return;
     }
-    if (leftDown && !leftDown.screen && player.camMode === 'orbit') {
-      player.orbit.a -= (e.clientX - leftDown.x) * 0.006; player.orbit.e = clamp(player.orbit.e + (e.clientY - leftDown.y) * 0.004, 0.05, 1.3);
-      leftDown = { x: e.clientX, y: e.clientY };
+    if (leftDown && !leftDown.screen && leftDown.id === e.pointerId) {
+      const dx = e.clientX - leftDown.x, dy = e.clientY - leftDown.y;
+      if (player.camMode !== 'fp') {
+        if (player.camMode === 'chase') { player.camMode = 'orbit'; player.orbit.a = 0; player.orbit.e = 0.3; player.orbit.d = player.orbit.dT = 8; }
+        player.orbit.a -= dx * 0.006; player.orbit.e = clamp(player.orbit.e + dy * 0.004, 0.05, 1.3);
+      } else if (leftDown.touch) {
+        // a finger dragged across the windscreen looks around the cabin
+        player.lookYaw = clamp(player.lookYaw - dx * look, -2.4, 2.4);
+        player.lookPitch = clamp(player.lookPitch - dy * look, -1.2, 0.9);
+        lookTouchT = 0;
+      }
+      leftDown.x = e.clientX; leftDown.y = e.clientY;
     }
     const h = screenHit();
     hoverScreen = h && h.object === model.screenMesh ? h : null;
-    if (leftDown && leftDown.screen && hoverScreen) screen.pointer(h.uv.x * SW, (1 - h.uv.y) * SH, 'move');
-    canvas.style.cursor = h ? 'pointer' : 'default';
+    if (leftDown && leftDown.screen && leftDown.id === e.pointerId && hoverScreen) screen.pointer(h.uv.x * SW, (1 - h.uv.y) * SH, 'move');
+    if (e.pointerType !== 'touch') canvas.style.cursor = h ? 'pointer' : 'default';
   });
-  addEventListener('pointerup', (e) => {
+  const pointerEnd = (e, cancel) => {
     if (!started) return;
-    if (footDrag) { if (footDrag.moved < 6 && player.mode === 'foot') { setMouse(e); footClick(true); } footDrag = null; return; }
+    const wasPinch = !!pinch;
+    if (e.pointerType === 'touch') {
+      touches.delete(e.pointerId); if (touches.size < 2) pinch = null;
+      // a quick tap that didn't move (and wasn't part of a pinch) can be the first of a double tap
+      const ts = tapStart && tapStart.id === e.pointerId ? tapStart : null;
+      lastTap = ts && !wasPinch && performance.now() - ts.t < 260 && Math.hypot(e.clientX - ts.x, e.clientY - ts.y) < 12 ? { t: performance.now(), x: e.clientX, y: e.clientY } : null;
+      if (ts) tapStart = null;
+    }
+    if (panelDrag && e.pointerId === panelDrag.id) {
+      const dragged = screen.pointer(0, 0, 'up'), pp = panelAt(e.clientX, e.clientY);
+      if (!cancel && !dragged && !panelDrag.scrolled && panelDrag.moved < 24 && pp) screen.click(pp.px, pp.py);
+      panelDrag = null;
+      return;
+    }
+    if (wasPinch) return;
+    if (footDrag && footDrag.id === e.pointerId) { if (!cancel && footDrag.moved < 8 && player.mode === 'foot') { setMouse(e); footClick(true); } footDrag = null; return; }
     if (e.button === 2) { rightDrag = null; return; }
+    if (leftDown && leftDown.id !== e.pointerId) return;
     if (leftDown && leftDown.screen) {
       setMouse(e);
       const dragged = screen.pointer(0, 0, 'up');
       const h = screenHit();
-      if (!dragged && h && h.object === model.screenMesh) screen.click(h.uv.x * SW, (1 - h.uv.y) * SH);
+      if (!cancel && !dragged && h && h.object === model.screenMesh) screen.click(h.uv.x * SW, (1 - h.uv.y) * SH);
     }
     leftDown = null;
-  });
+  };
+  addEventListener('pointerup', (e) => pointerEnd(e, false));
+  addEventListener('pointercancel', (e) => pointerEnd(e, true));
+  // zoom a step: out (dir > 0) or in. In the car it runs continuously from the driver's seat out to a
+  // view around the car and back
+  function zoomStep(dir) {
+    if (player.mode !== 'car') { zoomFov = clamp(zoomFov + dir * 4, 24, 80); return; }
+    const o = player.orbit;
+    if (player.camMode === 'fp') {
+      if (dir > 0) {
+        if (zoomFov < 72) { zoomFov = Math.min(72, zoomFov + 4); return; }
+        player.camMode = 'orbit'; o.a = 0; o.e = 0.22; o.d = 4.2; o.dT = 6.5; player.focusScreen = false;
+      } else zoomFov = Math.max(24, zoomFov - 4);
+      return;
+    }
+    if (player.camMode === 'chase') player.camMode = 'orbit';
+    o.dT = (o.dT ?? o.d) * (dir > 0 ? 1.12 : 0.89);
+    if (o.dT < 4) { player.camMode = 'fp'; player.lookYaw = 0; player.lookPitch = -0.08; zoomFov = 72; o.dT = 6.5; return; }
+    o.dT = Math.min(o.dT, 40);
+  }
   canvas.addEventListener('wheel', (e) => {
     if (!started) return;
     e.preventDefault();
@@ -444,22 +604,8 @@ async function boot() {
     if (player.mode === 'car') {
       const h = screenHit();
       if (h && h.object === model.screenMesh && screen.wheel(h.uv.x * SW, (1 - h.uv.y) * SH, e.deltaY)) return;
-      // the wheel zooms continuously from the driver's seat out to a view around the car and back
-      const o = player.orbit;
-      if (player.camMode === 'fp') {
-        if (e.deltaY > 0) {
-          if (zoomFov < 72) { zoomFov = Math.min(72, zoomFov + 4); return; }
-          player.camMode = 'orbit'; o.a = 0; o.e = 0.22; o.d = 4.2; o.dT = 6.5; player.focusScreen = false;
-        } else zoomFov = Math.max(24, zoomFov - 4);
-        return;
-      }
-      if (player.camMode === 'chase') player.camMode = 'orbit';
-      o.dT = (o.dT ?? o.d) * (e.deltaY > 0 ? 1.12 : 0.89);
-      if (o.dT < 4) { player.camMode = 'fp'; player.lookYaw = 0; player.lookPitch = -0.08; zoomFov = 72; o.dT = 6.5; return; }
-      o.dT = Math.min(o.dT, 40);
-      return;
     }
-    zoomFov = clamp(zoomFov + Math.sign(e.deltaY) * 4, 24, 80);
+    zoomStep(Math.sign(e.deltaY));
   }, { passive: false });
 
   let zoomFov = 72, signalArmed = false, started = false, footDrag = null, lockFailed = false, headless = false;
@@ -494,10 +640,11 @@ async function boot() {
     const wasOpen = model.isOpen('FL');
     if (!wasOpen) { model.toggle('FL'); audio.door(true); }
     setTimeout(() => {
-      player.mode = 'car'; player.lookYaw = 0; player.lookPitch = -0.08; player.camMode = 'fp';
+      // (a phone held upright mostly sees the dashboard from the seat: start behind the car instead)
+      player.mode = 'car'; player.lookYaw = 0; player.lookPitch = -0.08; player.camMode = TOUCH && innerHeight > innerWidth ? 'chase' : 'fp';
       document.exitPointerLock?.();
       setTimeout(() => { if (model.isOpen('FL')) { model.toggle('FL'); setTimeout(() => audio.door(false), 450); } audio.chime('seat'); }, 500);
-      toast('Welcome, Rudy', 'Tap Start Supervised Full Self-Driving, or press F for Drive');
+      toast('Welcome, Rudy', tw('Tap Start Supervised Full Self-Driving, or press F for Drive', 'Tap FSD to self-drive, or pick D and press GO'));
     }, wasOpen ? 150 : 650);
   }
   function exitCar() {
@@ -509,11 +656,11 @@ async function boot() {
     const side = CAR_WID / 2 + 0.95;
     player.x = car.cx + left.x * side - Math.cos(car.h) * 0.4; player.z = car.cz + left.z * side - Math.sin(car.h) * 0.4;
     player.yaw = yawFromHeading(car.h) + Math.PI * 0.5; player.pitch = -0.15;
-    player.mode = 'foot';
-    setHint('Click to look around · click the door to close it');
+    player.mode = 'foot'; touchScreen = false;
+    setHint(tw('Click to look around · click the door to close it', 'Drag to look around · tap the door to close it'));
   }
   let hintT = 0;
-  function setHint(t) { $('hint').textContent = t; $('hint').style.opacity = 1; hintT = 3; }
+  function setHint(t, dur = 3) { $('hint').textContent = t; $('hint').style.opacity = 1; hintT = dur; }
 
   // ---------------- loop
   let last = performance.now(), cubeFrame = 0, perceptT = 0, blinkT = 0, chargeCheckT = 0, beepT = 0, lowBattWarned = false, lastLocked = state.locked, throttle = 0;
@@ -529,13 +676,21 @@ async function boot() {
     // inputs
     const inCar = player.mode === 'car', typing = screen.isTyping();
     const k = (c) => !typing && keys[c];
-    const wantT = inCar && (k('KeyW') || k('ArrowUp')) ? 1 : 0;
+    const tc = touch && inCar ? touch : null;
+    const wantT = inCar ? Math.max(k('KeyW') || k('ArrowUp') ? 1 : 0, tc ? tc.throttle : 0) : 0;
     throttle += clamp(wantT - throttle, -dt * 4, dt * 2.6);
     const input = {
       throttle: inCar ? throttle : 0,
-      brake: inCar && (k('KeyS') || k('ArrowDown') || k('Space')) ? 1 : inCar ? 0 : 0,
-      steerIn: inCar ? (k('KeyD') || k('ArrowRight') ? 1 : 0) - (k('KeyA') || k('ArrowLeft') ? 1 : 0) : 0,
+      brake: inCar ? Math.max(k('KeyS') || k('ArrowDown') || k('Space') ? 1 : 0, tc ? tc.brake : 0) : 0,
+      steerIn: tc && tc.steering ? tc.steer : inCar ? (k('KeyD') || k('ArrowRight') ? 1 : 0) - (k('KeyA') || k('ArrowLeft') ? 1 : 0) : 0,
     };
+    // turning the touch wheel takes over from Self-Driving, like the A / D keys
+    if (tc && tc.steering && Math.abs(tc.steer) > 0.18 && fsd.engaged && !fsd.summon) disengage('Self-Driving disengaged', 'Steering override — you have control');
+    // after looking around by touch, the driver's view drifts back to the road once the car is moving
+    lookTouchT += dt;
+    if (tc && player.camMode === 'fp' && !player.focusScreen && lookTouchT > 1.6 && Math.abs(car.v) > 2 && !(leftDown && leftDown.touch)) {
+      player.lookYaw = lerp(player.lookYaw, 0, Math.min(1, dt * 1.6)); player.lookPitch = lerp(player.lookPitch, -0.08, Math.min(1, dt * 1.6));
+    }
     // perception (all 8 cameras) at 20 Hz
     perceptT -= dt;
     if (perceptT <= 0) { perceptT = 0.05; vision.update(0.05, car, traffic.vehicles); }
@@ -563,8 +718,8 @@ async function boot() {
         if (out.takeover) { stopSummon('Stopped: something is in the way'); cmd = null; }
         else if (out.done) {
           car.gear = 'P'; fsd.disengage(); fsd.summon = null; car.signal = null; cmd = null;
-          audio.chime('arrive'); phone.note(`<b>Your ${vehicle.name} has arrived</b> · press E at the driver door to get in`);
-          setHint(`Your ${vehicle.name} is here · press E at the driver door`);
+          audio.chime('arrive'); phone.note(`<b>Your ${vehicle.name} has arrived</b> · ${tw('press E at the driver door to get in', 'tap Get in at the driver door')}`);
+          setHint(`Your ${vehicle.name} is here · ${tw('press E at the driver door', 'tap Get in at the driver door')}`);
         } else if (out.replanOff) stopSummon('Stopped: off the planned path');
       } else if (out.takeover) disengage('Take over immediately', 'Self-Driving could not maintain a safe gap', true);
       else if (out.done) {
@@ -618,7 +773,7 @@ async function boot() {
     // phone-key auto lock
     const dCar = Math.hypot(player.x - car.cx, player.z - car.cz);
     if (!inCar) {
-      if (state.locked && dCar < 3.2) { state.locked = false; audio.chime('unlock'); setHint('Unlocked with phone key · click a door, frunk or trunk · E to get in'); }
+      if (state.locked && dCar < 3.2) { state.locked = false; audio.chime('unlock'); setHint(tw('Unlocked with phone key · click a door, frunk or trunk · E to get in', 'Unlocked with phone key · tap a door, frunk or trunk to open it')); }
       else if (!state.locked && dCar > 7 && !model.anyDoorOpen()) { state.locked = true; audio.chime('lock'); }
     }
     if (state.locked !== lastLocked) lastLocked = state.locked;
@@ -651,12 +806,20 @@ async function boot() {
         const h = document.pointerLockElement === canvas ? footRay() : null;
         const dd = driverDoorWorld();
         if (h) { const a = h.object.userData.action; $('hint').textContent = a === 'chargeport' ? (state.chargeAvail ? 'Click to plug in / unplug' : 'Click to open the charge port') : `Click to ${model.isOpen(a) ? 'close' : 'open'} ${({ FL: 'driver door', FR: 'passenger door', RL: 'rear left door', RR: 'rear right door', frunk: 'frunk', trunk: 'trunk' })[a]}`; $('hint').style.opacity = 1; }
-        else if (Math.hypot(player.x - dd.x, player.z - dd.z) < 2.6) { $('hint').textContent = 'Press E to get in'; $('hint').style.opacity = 1; }
-        else if (document.pointerLockElement !== canvas) { $('hint').textContent = 'Drag to look around · WASD to walk · click doors to open'; $('hint').style.opacity = 1; }
+        else if (Math.hypot(player.x - dd.x, player.z - dd.z) < 2.6) { $('hint').textContent = tw('Press E to get in', 'Tap Get in'); $('hint').style.opacity = 1; }
+        else if (document.pointerLockElement !== canvas) { $('hint').textContent = tw('Drag to look around · WASD to walk · click doors to open', 'Left thumb to walk · drag to look · tap a door to open it'); $('hint').style.opacity = 1; }
         else $('hint').style.opacity = 0;
       } else $('hint').style.opacity = player.focusScreen || hoverScreen ? 0 : 0;
     }
     $('crosshair').style.display = !inCar && document.pointerLockElement === canvas ? 'block' : 'none';
+    if (touch && !headless) {
+      const dd = driverDoorWorld();
+      touch.update({
+        inCar, nearDoor: !inCar && Math.hypot(player.x - dd.x, player.z - dd.z) < 2.6, screenOpen: panelOpen(), phoneOpen: phone.open,
+        mph: Math.abs(car.v) * MPH, gear: car.gear, fsd: fsd.engaged && !fsd.summon, fsdStatus: fsd.status, dest: nav.dest && nav.dest.name,
+        signal: car.signal, hazard: car.hazard, blinkOn: state.blinkOn, headlights: settings.headlights, muted: audio.muted, quality: settings.quality, steerAngle: car.steer,
+      });
+    }
     // reflections
     cubeFrame++;
     if (!headless && (settings.quality === 'High' ? cubeFrame % 10 === 0 : cubeFrame % 40 === 0)) {
@@ -694,14 +857,18 @@ async function boot() {
   }
 
   const tmpV = new THREE.Vector3();
+  // a tall (portrait) screen keeps about the same side-to-side view as a wide one
+  const fovK = () => (camera.aspect < 1 ? 1.32 : 1);
   function updateCamera(dt) {
     if (window.__freeCam) { const f = window.__freeCam; camera.position.set(...f.pos); camera.lookAt(...f.look); camera.fov = f.fov || 60; camera.updateProjectionMatrix(); return; }
     if (player.mode === 'foot') {
-      const sp = keys.ShiftLeft || keys.ShiftRight ? 4.2 : 1.7;
-      const fwd = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0), str = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+      // (the thumbstick: walk, pushed out to the rim to run)
+      const tm = touch && !phone.open ? touch.move : { x: 0, y: 0 }, stick = Math.hypot(tm.x, tm.y);
+      const sp = keys.ShiftLeft || keys.ShiftRight || stick > 0.92 ? 4.2 : 1.7;
+      const fwd = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0) + tm.y, str = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0) + tm.x;
       const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw), rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
       let mx = fx * fwd + rx * str, mz = fz * fwd + rz * str;
-      const l = Math.hypot(mx, mz); if (l > 0) { mx /= l; mz /= l; }
+      const l = Math.hypot(mx, mz); if (l > 1) { mx /= l; mz /= l; } else if (l > 0 && stick === 0) { mx /= l; mz /= l; }
       player.x += mx * sp * dt; player.z += mz * sp * dt;
       // collisions: buildings, poles, the Model Y and traffic
       for (const o of city.queryObstacles(player.x, player.z)) {
@@ -718,7 +885,7 @@ async function boot() {
       player.y = lerp(player.y, gy, Math.min(1, dt * 12));
       camera.position.set(player.x, player.y, player.z);
       camera.rotation.set(player.pitch, player.yaw, 0);
-      camera.fov = lerp(camera.fov, 72, dt * 4);
+      camera.fov = lerp(camera.fov, 72 * fovK(), dt * 4);
     } else if (player.camMode === 'fp') {
       model.root.updateMatrixWorld();
       if (player.focusScreen) {
@@ -728,7 +895,7 @@ async function boot() {
         const eye = vehicle.spec.eye;
         tmpV.set(eye.x + 0.12, eye.y - 0.03, eye.z - 0.1);
       } else {
-        camera.fov = lerp(camera.fov, zoomFov, dt * 6);
+        camera.fov = lerp(camera.fov, Math.min(100, zoomFov * fovK()), dt * 6);
         tmpV.copy(vehicle.spec.eye);
       }
       const p = model.chassis.localToWorld(tmpV.clone());
@@ -740,7 +907,7 @@ async function boot() {
       const gy = Math.max(car.y, city.groundHeight(tx, tz));
       camera.position.lerp(tmpV.set(tx, 2.8 + gy, tz), Math.min(1, dt * 4));
       camera.lookAt(car.cx + fx * 4, 1.0 + car.y, car.cz + fz * 4);
-      camera.fov = lerp(camera.fov, 62, dt * 3);
+      camera.fov = lerp(camera.fov, 62 * fovK(), dt * 3);
     } else {
       // orbit around the car: follows its heading, distance eases toward the wheel's target
       const o = player.orbit, a = yawFromHeading(car.h) + o.a;
@@ -752,7 +919,7 @@ async function boot() {
       if (hit < 1) camera.position.lerpVectors(tmpV.set(car.cx, ty, car.cz), camera.position.clone(), Math.max(0.12, hit - 0.5 / o.d));
       camera.position.y = Math.max(camera.position.y, city.groundHeight(camera.position.x, camera.position.z) + 0.4);
       camera.lookAt(car.cx, ty, car.cz);
-      camera.fov = lerp(camera.fov, 55, dt * 3);
+      camera.fov = lerp(camera.fov, 55 * fovK(), dt * 3);
     }
     camera.updateProjectionMatrix();
   }
@@ -761,6 +928,14 @@ async function boot() {
     renderer.setRenderTarget(null);
     renderer.shadowMap.needsUpdate = true;
     if (composer) composer.render(); else renderer.render(scene, camera);
+    if (panelOpen()) {
+      const r = touch.panelRect(), ac = renderer.autoClear;
+      renderer.autoClear = false;
+      renderer.setViewport(r.x, innerHeight - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, innerHeight - r.y - r.h, r.w, r.h); renderer.setScissorTest(true);
+      renderer.render(panelScene, panelCam);
+      renderer.setScissorTest(false); renderer.setViewport(0, 0, innerWidth, innerHeight);
+      renderer.autoClear = ac;
+    }
   }
 
   let fpsAcc = 0, fpsN = 0;
@@ -802,8 +977,8 @@ async function boot() {
     }
     started = true; audio.init();
     $('loading').classList.add('hide');
-    tryLock();
-    setHint('Walk to the front-left door · press E to get in');
+    if (!TOUCH) tryLock();
+    setHint(tw('Walk to the front-left door · press E to get in', 'Walk to the driver door (front left) · tap Get in'));
   });
   // (debug: advance the simulation without rendering, e.g. for automated tests in a background tab)
   window.__game = Object.assign(game, { player, camera, scene, renderer, screen, simulate: (seconds, dt = 1 / 60) => { headless = true; try { for (let t = 0; t < seconds; t += dt) update(dt); } finally { headless = false; } } });

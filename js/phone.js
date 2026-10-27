@@ -49,7 +49,7 @@ export class Phone {
     this.el.innerHTML = `<div class="ph"><div class="ph-notch"></div>
       <div class="ph-bar"><span data-k="clock">9:41</span><span>5G ▮▮▮ ${''}<span data-k="pbatt">100%</span></span></div>
       <div class="ph-page on" data-p="home">
-        <div class="ph-head"><div class="ph-name" data-k="vname">Rudy's Model Y</div><div class="ph-sub"><span class="ph-batt"><i data-k="bbar"></i></span><span data-k="range"></span><span data-k="pstate"></span></div></div>
+        <div class="ph-head"><div style="display:flex;align-items:center;gap:8px"><div class="ph-name" data-k="vname">Rudy's Model Y</div><button class="ph-done" data-a="close">Done</button></div><div class="ph-sub"><span class="ph-batt"><i data-k="bbar"></i></span><span data-k="range"></span><span data-k="pstate"></span></div></div>
         <div class="ph-car" data-k="carpic">${CAR_SVG}</div>
         <div class="ph-quick">
           <button class="ph-q" data-a="lock"><span data-k="lockico"></span><b data-k="locklbl">Lock</b></button>
@@ -65,10 +65,10 @@ export class Phone {
         </div>
       </div>
       <div class="ph-page" data-p="summon">
-        <div class="ph-top"><button class="ph-back" data-a="home" aria-label="Back">${svg('back', 22)}</button>Smart Summon</div>
+        <div class="ph-top"><button class="ph-back" data-a="home" aria-label="Back">${svg('back', 22)}</button>Smart Summon<button class="ph-done" data-a="close">Done</button></div>
         <div class="ph-map"><canvas></canvas><div class="ph-chip" data-k="chip"></div></div>
         <div class="ph-foot"><button class="ph-go" data-a="go">${svg('summon', 20, '#fff')}<span data-k="golbl">Come to Me</span></button>
-          <div class="ph-note">Max 8 mph · stay within ${Math.round(SUMMON_RANGE * 3.28)} ft (${SUMMON_RANGE} m) · keep watching your car<br>Enter: Come to Me / Stop · 1: put the phone away</div></div>
+          <div class="ph-note">Max 8 mph · stay within ${Math.round(SUMMON_RANGE * 3.28)} ft (${SUMMON_RANGE} m) · keep watching your car<span class="desk-only"><br>Enter: Come to Me / Stop · 1: put the phone away</span></div></div>
       </div></div>`;
     this.k = {};
     this.el.querySelectorAll('[data-k]').forEach((n) => { this.k[n.dataset.k] = n; });
@@ -96,6 +96,7 @@ export class Phone {
   action(a) {
     const act = this.g.act;
     if (a === 'home' || a === 'summon') { this.show(a); return; }
+    if (a === 'close') { this.toggle(false); return; }
     if (a === 'lock') act.phoneLock();
     else if (a === 'climate') { this.climate = !this.climate; this.g.audio.chime('click'); }
     else if (a === 'frunk') act.toggle('frunk');

@@ -195,6 +195,7 @@ export class City {
     this.findBridges();
     this.terrain.addRiver(this.riverPts, RIVER_HALF);
     this.terrain.setCity(this.cityPoly);
+    this.terrain.streetNear = (x, z, pad) => this.streetNear(x, z, pad);
     this.terrain.build();
     this.planBlocks();
     this.buildGround();
@@ -1016,6 +1017,20 @@ export class City {
     for (const e of near) {
       const n = this.nodes[e.a];
       if (n.jpoly && (x - n.x) ** 2 + (z - n.z) ** 2 < (n.r + 4) ** 2 && pointInPoly(x, z, n.jpoly)) return true;
+    }
+    return false;
+  }
+  // a town street (not a hill road) or junction within pad metres of its kerb
+  streetNear(x, z, pad) {
+    const near = this.edgesNear(x, z);
+    for (const e of near) {
+      if (e.kind === 'hill') continue;
+      const { u, w } = this.edgeLocal(e, x, z);
+      if (u > -pad && u < e.len + pad && Math.abs(w) < e.hw + pad) return true;
+    }
+    for (const e of near) {
+      const n = this.nodes[e.a];
+      if (n.r && (x - n.x) ** 2 + (z - n.z) ** 2 < (n.r + pad) ** 2) return true;
     }
     return false;
   }
