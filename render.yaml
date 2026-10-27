@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: fsd-city
+    runtime: static
+    buildCommand: ""
+    staticPublishPath: .
