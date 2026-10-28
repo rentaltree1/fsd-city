@@ -276,7 +276,7 @@ export class City {
       // a park-and-ride sits on the far part)
       const o = [Math.cos(a), Math.sin(a)], rEnd = fwyR(a) + EXT_R, ext = [];
       for (let r = edgeR(a) - 7; r <= rEnd; r += 4) ext.push([o[0] * r, o[1] * r]);
-      const L = mkLine(ext, 'art', name, { kind: 'spokex', limit: 17.9, ends: ['T', 'D'], maxSeg: 420 });
+      const L = mkLine(ext, 'art', name, { kind: 'spokex', limit: 17.9, ends: ['T', 'D'], maxSeg: 480 });
       L.r0 = edgeR(a) - 7; L.o = o; L.a = a; L.ix = ix;
       inter.push({ a, ix, L });
     }
@@ -304,7 +304,7 @@ export class City {
     const NF = 3600;
     { const pts = []; for (let k = 0; k < NF; k++) { const a = (k / NF) * TAU, r = fwyR(a) - 2; pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'fwy', 'Interstate 26', { closed: true, kind: 'fwy', limit: FWY_LIMIT, oneWay: true, level: 1, maxSeg: 300 }); }
     { const pts = []; for (let k = NF - 1; k >= 0; k--) { const a = (k / NF) * TAU, r = fwyR(a) + 2; pts.push([Math.cos(a) * r, Math.sin(a) * r]); } mkLine(pts, 'fwy', 'Interstate 26', { closed: true, kind: 'fwy', limit: FWY_LIMIT, oneWay: true, level: 1, maxSeg: 300 }); }
-    const RAMP_OFF = ROAD.fwy.off[2], TAPER = 120, PHI = 7.9 * Math.PI / 180, D1 = 330, D2 = 330, TERM = 95;
+    const RAMP_OFF = ROAD.fwy.off[2], TAPER = 120, PHI = 7.9 * Math.PI / 180, D1 = 330, D2 = 372, TERM = 95;
     const cubic = (P0, P1, P2, P3, n) => { const out = []; for (let i = 0; i <= n; i++) { const t = i / n, u = 1 - t; out.push([u * u * u * P0[0] + 3 * u * u * t * P1[0] + 3 * u * t * t * P2[0] + t * t * t * P3[0], u * u * u * P0[1] + 3 * u * u * t * P1[1] + 3 * u * t * t * P2[1] + t * t * t * P3[1]]); } return out; };
     this.interchanges = [];
     for (const it of inter) {
@@ -312,6 +312,8 @@ export class City {
       const rc = fwyR(a), rA = rc - TERM, rB = rc + TERM;
       const A = [o[0] * rA, o[1] * rA], B = [o[0] * rB, o[1] * rB], C = [o[0] * rc, o[1] * rc];
       const onFwy = (da, side) => { const aa = a + da, r = fwyR(aa) + side * 2; return [Math.cos(aa) * r, Math.sin(aa) * r]; };
+      // the freeway's own direction (increasing angle) where a ramp leaves or joins it
+      const tAt = (da) => { const p = onFwy(da + 0.002, 0), q = onFwy(da - 0.002, 0), l = Math.hypot(p[0] - q[0], p[1] - q[1]); return [(p[0] - q[0]) / l, (p[1] - q[1]) / l]; };
       const rot = (v, s) => [v[0] * Math.cos(s) - v[1] * Math.sin(s), v[0] * Math.sin(s) + v[1] * Math.cos(s)]; // rotate anticlockwise in (x,z)
       const add = (p, v, s) => [p[0] + v[0] * s, p[1] + v[1] * s];
       // exit ramp from the inner (clockwise) carriageway: leaves before the bridge, swings in to terminal A
@@ -324,22 +326,22 @@ export class City {
       // crossing is found; the stubs are dropped by buildNet.)
       {
         // exit from the inner (clockwise) carriageway: leaves before the bridge, swings in to terminal A
-        const d1 = onFwy(-D1 / rc, -1), h1 = rot(t, PHI), E = add(d1, h1, TAPER), pts = [];
+        const d1 = onFwy(-D1 / rc, -1), h1 = rot(tAt(-D1 / rc), PHI), E = add(d1, h1, TAPER), pts = [];
         for (let s = -3; s <= TAPER; s += 4) pts.push(add(d1, h1, s));
         pts.push(...cubic(E, add(E, h1, 70), add(A, t, -70), A, 40).slice(1), add(A, t, 3));
         ramp(pts, `${it.L.name} exit`).offFn = exitFn;
         // entrance to the inner carriageway from terminal A: merges after the bridge
-        const m1 = onFwy(D2 / rc, -1), h2 = rot(t, -PHI), S2 = add(m1, h2, -TAPER), pts2 = [add(A, t, -3), ...cubic(A, add(A, t, 70), add(S2, h2, -70), S2, 40)];
+        const m1 = onFwy(D2 / rc, -1), h2 = rot(tAt(D2 / rc), -PHI), S2 = add(m1, h2, -TAPER), pts2 = [add(A, t, -3), ...cubic(A, add(A, t, 70), add(S2, h2, -70), S2, 40)];
         for (let s = 4; s <= TAPER + 3; s += 4) pts2.push(add(S2, h2, s));
         ramp(pts2, `${it.L.name} on-ramp`).offFn = entFn(lineLen(pts2) - 3);
       }
       {
         // the outer (anticlockwise) carriageway: its right is away from town (+o)
-        const tO = [-t[0], -t[1]], d2 = onFwy(D1 / rc, 1), h3 = rot(tO, PHI), E = add(d2, h3, TAPER), pts = [];
+        const tO = [-t[0], -t[1]], d2 = onFwy(D1 / rc, 1), tl3 = tAt(D1 / rc), h3 = rot([-tl3[0], -tl3[1]], PHI), E = add(d2, h3, TAPER), pts = [];
         for (let s = -3; s <= TAPER; s += 4) pts.push(add(d2, h3, s));
         pts.push(...cubic(E, add(E, h3, 70), add(B, tO, -70), B, 40).slice(1), add(B, tO, 3));
         ramp(pts, `${it.L.name} exit`).offFn = exitFn;
-        const m2 = onFwy(-D2 / rc, 1), h4 = rot(tO, -PHI), S4 = add(m2, h4, -TAPER), pts2 = [add(B, tO, -3), ...cubic(B, add(B, tO, 70), add(S4, h4, -70), S4, 40)];
+        const m2 = onFwy(-D2 / rc, 1), tl4 = tAt(-D2 / rc), h4 = rot([-tl4[0], -tl4[1]], -PHI), S4 = add(m2, h4, -TAPER), pts2 = [add(B, tO, -3), ...cubic(B, add(B, tO, 70), add(S4, h4, -70), S4, 40)];
         for (let s = 4; s <= TAPER + 3; s += 4) pts2.push(add(S4, h4, s));
         ramp(pts2, `${it.L.name} on-ramp`).offFn = entFn(lineLen(pts2) - 3);
       }
@@ -358,6 +360,10 @@ export class City {
       const zone = (s0, s1) => this.noJoin.push({ x: o[0] * (r0 + s0), z: o[1] * (r0 + s0), dx: o[0], dz: o[1], len: s1 - s0 });
       zone(30, fwyR(ic.a) + EXT_R - r0); // the whole extension: the mall on the inside, ramps, the park outside
     }
+    // ground kept free of side streets: the mall's lot and building beside the east spoke
+    this.reserve = [];
+    { const ic = this.interchanges.find((c) => c.ix === 'E'); if (ic) { const o = ic.line.o, r0 = ic.line.r0; this.reserve.push({ x: o[0] * (r0 + 10), z: o[1] * (r0 + 10), dx: o[0], dz: o[1], len: 320, w0: -6, w1: 240 }); } }
+    const inReserve = (x, z) => this.reserve.some((zn) => { const u = (x - zn.x) * zn.dx + (z - zn.z) * zn.dz, w = -(x - zn.x) * zn.dz + (z - zn.z) * zn.dx; return u > -40 && u < zn.len + 40 && w > zn.w0 - 40 && w < zn.w1 + 40; });
 
     // ---- distance to the arterials, city mask, river, and the superblocks between them (6 m raster)
     const GS = 6, GN = 820, G0 = -2460, gi = (v) => Math.floor((v - G0) / GS), cx = (i) => G0 + (i + 0.5) * GS;
@@ -424,7 +430,7 @@ export class City {
       let u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
       for (const k of cells) { const x = cx(k % GN) - mx, z = cx((k / GN) | 0) - mz, u = x * ux + z * uz, v = x * vx + z * vz; u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
       const inComp = (x, z) => at(lab, x, z, -1) === cid;
-      const valid = (x, z) => inComp(x, z) && dAll(x, z) >= P.buf && rD(x, z) >= 50;
+      const valid = (x, z) => inComp(x, z) && dAll(x, z) >= P.buf && rD(x, z) >= 50 && !inReserve(x, z);
       const span = v1 - v0 - 2 * P.buf;
       if (span < -30) return;
       const nr = Math.max(1, Math.floor(Math.max(0, span) / P.rail) + 1), vs = [];
@@ -1115,12 +1121,14 @@ export class City {
       for (const q of cyc) area += q.ax * q.bz - q.bx * q.az;
       faces.push({ cyc, area: area / 2 });
     }
-    let oi = 0;
-    faces.forEach((f, i) => { if (Math.abs(f.area) > Math.abs(faces[oi].area)) oi = i; });
-    const outer = faces[oi], sg = Math.sign(outer.area);
-    this.ring = outer.cyc.map((g) => [g.ax, g.az]);
+    // blocks are the faces wound the way most faces are; the outside (and the ring-shaped strip
+    // between the freeway's carriageways, which walks round as two huge loops) wind the other way
+    const pos = faces.filter((f) => f.area > 0).length, bs = pos > faces.length / 2 ? 1 : -1;
+    let outer = null;
+    for (const f of faces) if (Math.sign(f.area) !== bs && (!outer || Math.abs(f.area) > Math.abs(outer.area))) outer = f;
+    this.ring = (outer || faces[0]).cyc.map((g) => [g.ax, g.az]);
     // (the strip between the freeway's carriageways and the slivers beside its ramps are not blocks)
-    this.faces = faces.filter((f) => f !== outer && Math.sign(f.area) !== sg && !f.cyc.every((g) => g.kind === 'fwy' || g.kind === 'ramp'));
+    this.faces = faces.filter((f) => Math.sign(f.area) === bs && Math.abs(f.area) < 4e6 && !f.cyc.every((g) => g.kind === 'fwy' || g.kind === 'ramp'));
     for (const f of this.faces) {
       for (const g of f.cyc) g.face = f;
       const ns = f.cyc.map((g) => this.nodes[g.a]);
@@ -1333,12 +1341,18 @@ export class City {
       if (side === 'N') gz -= S / 2; else if (side === 'S') gz += S / 2; else if (side === 'W') gx -= S / 2; else gx += S / 2;
       const [tx, tz] = this.warp(gx, gz);
       let e = null, bs = 1e18;
-      for (const c of this.edges) {
-        if (c.curve || c.axis === 'd' || c.lanes !== 2 || !c.face || c.face.poi || c.face.park || c.bridge) continue;
-        if (c.sa > 30 || c.len - c.sb < 92) continue;
-        const m = this.edgePoint(c, 57, 20), d = (m.x - tx) ** 2 + (m.z - tz) ** 2;
-        if (d >= bs || !lotFits(c)) continue;
-        bs = d; e = c;
+      // (a second pass allows a block that already has a place, so every place gets a lot)
+      for (const strict of [true, false]) {
+        for (const c of this.edges) {
+          if (c.curve || c.axis === 'd' || c.lanes !== 2 || !c.face || c.face.park || c.bridge || c.kind === 'spokex') continue;
+          if (strict && (c.face.poi || c.face.stores)) continue;
+          if (c.sa > 30 || c.len - c.sb < 92) continue;
+          const m = this.edgePoint(c, 57, 20), d = (m.x - tx) ** 2 + (m.z - tz) ** 2;
+          if (d >= bs || !lotFits(c)) continue;
+          if (!strict && this.lots.some((l) => l.edge === c || l.edge === c.rev)) continue;
+          bs = d; e = c;
+        }
+        if (e) break;
       }
       if (!e) continue;
       const block = e.face, lot = this.makeLot(e, cat === 'charger');
@@ -1487,7 +1501,7 @@ export class City {
         if (e.kind !== 'spokex' || e.noEntry || e.name !== icE.name || e.dx * o[0] + e.dz * o[1] < 0.9 || e.len < 290) continue;
         if (!Object.values(this.nodes[e.a].in).some((q) => q.kind === 'ring')) continue;
         const L = 220, D = 62 + 120, u0 = e.sa + 12;
-        const cand = [e, e.rev].find((q) => q.face && fits(q, u0, L, D));
+        const cand = [e].find((q) => q.face && fits(q, u0, L, D));
         if (!cand) continue;
         addPoi('Grand Central Mall', 'shopping', cand, this.makeBigLot(cand, u0, D, { L, pairs: 3 }), { mall: true });
         break;

@@ -152,6 +152,23 @@ async function boot() {
       if (!open && (k !== 'frunk' && k !== 'trunk')) setTimeout(() => audio.door(false, player.mode === 'car' ? 1 : 0.7), 250);
     },
     lock() { state.locked = !state.locked; audio.chime(state.locked ? 'lock' : 'unlock'); },
+    // a button, switch, stalk or scroll wheel inside the car: the model animates it; the car acts on it
+    interior(a) {
+      if (model.press && model.press(a)) { audio.chime('click'); return; }
+      if (['FL', 'FR', 'RL', 'RR'].includes(a)) { act.toggle(a); return; }
+      if (a === 'hazard') { act.hazard(); audio.chime('click'); }
+      else if (a === 'horn') act.honk();
+      else if (a === 'sig:L' || a === 'sig:R') { const d = a.slice(-1); car.signal = car.signal === d ? null : d; signalArmed = false; audio.chime('click'); }
+      else if (a === 'sig:off') { car.signal = null; }
+      else if (a === 'wiper') { wipersT = 7; audio.chime('click'); }
+      else if (a === 'lights') act.cycleHeadlights();
+      else if (a.startsWith('gear:')) act.setGear(a.slice(5));
+      else if (a === 'fsd') act.fsdButton();
+      else if (a === 'media') { audio.togglePlay(); audio.chime('click'); }
+      else if (a === 'volUp') audio.setVolume(audio.volume + 0.1);
+      else if (a === 'volDown') audio.setVolume(audio.volume - 0.1);
+      else audio.chime('click');
+    },
     chargePort() { model.chargeTarget = model.chargeTarget > 0.5 ? 0 : 1; audio.chime('click'); if (model.chargeTarget < 0.5 && car.charging) act.stopCharge(); },
     startCharge() {
       if (!state.chargeAvail) { toast('No charger here', 'Back into a Supercharger stall to charge'); return; }
@@ -376,7 +393,7 @@ async function boot() {
   const keys = {};
   const ray = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
-  let rightDrag = null, leftDown = null, hoverScreen = null;
+  let rightDrag = null, leftDown = null, hoverScreen = null, hoverLabel = null, wipersT = 0;
   const DISENGAGE = new Set(['KeyS', 'KeyA', 'KeyD', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
   addEventListener('keydown', (e) => {
     if (!started) return;
@@ -465,7 +482,7 @@ async function boot() {
     if (h && h.object === model.screenMesh) {
       leftDown = { id: e.pointerId, screen: true, x: e.clientX, y: e.clientY };
       screen.pointer(h.uv.x * SW, (1 - h.uv.y) * SH, 'down');
-    } else if (h && h.object.userData.action) act.toggle(h.object.userData.action);
+    } else if (h && h.object.userData.action) act.interior(h.object.userData.action);
     else leftDown = { id: e.pointerId, x: e.clientX, y: e.clientY, touch: isTouch };
   });
   addEventListener('pointermove', (e) => {
@@ -547,6 +564,7 @@ async function boot() {
     }
     const h = screenHit();
     hoverScreen = h && h.object === model.screenMesh ? h : null;
+    hoverLabel = h && h.object.userData.label ? h.object.userData.label : null;
     if (leftDown && leftDown.screen && leftDown.id === e.pointerId && hoverScreen) screen.pointer(h.uv.x * SW, (1 - h.uv.y) * SH, 'move');
     if (e.pointerType !== 'touch') canvas.style.cursor = h ? 'pointer' : 'default';
   });
@@ -789,7 +807,8 @@ async function boot() {
     }
     model.root.rotation.y = yawFromHeading(car.h);
     const headlights = settings.headlights === 'On' || (settings.headlights === 'Auto' && night > 0.35 && awake);
-    model.update(dt, { v: car.v, steer: car.steer, accel: car.accel, latAcc: car.latAcc, dist: car.dist, signal: car.signal, hazard: car.hazard, blinkOn: state.blinkOn, headlights, braking: car.braking && awake, gear: car.gear, awake, night, time: clock.simT, charging: car.charging });
+    wipersT = Math.max(0, wipersT - dt);
+    model.update(dt, { v: car.v, steer: car.steer, accel: car.accel, latAcc: car.latAcc, dist: car.dist, signal: car.signal, hazard: car.hazard, blinkOn: state.blinkOn, headlights, braking: car.braking && awake, gear: car.gear, awake, night, time: clock.simT, charging: car.charging, fsd: fsd.engaged && !fsd.summon, volume: audio.volume, wipers: wipersT > 0 });
     dome.intensity = model.anyDoorOpen() ? 1.2 : 0;
     model.screenMesh.material.color.setScalar(awake ? (composer ? 1.45 / renderer.toneMappingExposure : 1) * lerp(1, 0.85, night) : 0.02);
     if (flashT > 0) { flashT -= dt; if (flashT <= 0) car.hazard = false; }
@@ -812,7 +831,8 @@ async function boot() {
         else if (Math.hypot(player.x - dd.x, player.z - dd.z) < 2.6) { $('hint').textContent = tw('Press E to get in', 'Tap Get in'); $('hint').style.opacity = 1; }
         else if (document.pointerLockElement !== canvas) { $('hint').textContent = tw('Drag to look around · WASD to walk · click doors to open', 'Left thumb to walk · drag to look · tap a door to open it'); $('hint').style.opacity = 1; }
         else $('hint').style.opacity = 0;
-      } else $('hint').style.opacity = player.focusScreen || hoverScreen ? 0 : 0;
+      } else if (hoverLabel && !hoverScreen) { $('hint').textContent = hoverLabel; $('hint').style.opacity = 1; }
+      else $('hint').style.opacity = 0;
     }
     $('crosshair').style.display = !inCar && document.pointerLockElement === canvas ? 'block' : 'none';
     if (touch && !headless) {
